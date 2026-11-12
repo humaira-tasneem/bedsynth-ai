@@ -109,10 +109,11 @@ export default function HomePage() {
     setActive(id);
     setMobileOpen(false);
     if (id === "hospitals") router.push("/hospitals");
+    else if (id === "generate") router.push("/generate");
     else if (pathname !== "/") router.push("/");
   }
 
-  const currentSection = pathname === "/hospitals" ? "hospitals" : active;
+  const currentSection = pathname === "/hospitals" ? "hospitals" : pathname === "/generate" ? "generate" : active;
   const selectedLabel = navigation.find((item) => item.id === currentSection)?.label ?? "Settings";
 
   return (
@@ -135,7 +136,6 @@ export default function HomePage() {
           {navigation.map(({ id, label, icon: Icon }) => (
             <button key={id} className={`nav-item ${currentSection === id ? "nav-item-active" : ""}`} onClick={() => selectSection(id)} aria-current={currentSection === id ? "page" : undefined}>
               <Icon size={18} strokeWidth={1.9} /><span>{label}</span>
-              {id === "generate" && <span className="nav-soon">SOON</span>}
             </button>
           ))}
           <span className="nav-heading nav-heading-lower">PREFERENCES</span>
@@ -193,7 +193,7 @@ export default function HomePage() {
                 <div className="setup-list">
                   <button className="setup-row" onClick={() => selectSection("hospitals")}><span className="setup-number">01</span><span className="setup-row-icon"><Building2 size={19} /></span><span className="setup-row-copy"><strong>Open Hospital Studio</strong><small>Manage hospitals, departments, and bed inventory.</small></span><span className="setup-status">AVAILABLE <ArrowUpRight size={14} /></span></button>
                   <div className="setup-row setup-row-muted"><span className="setup-number">02</span><span className="setup-row-icon"><Network size={19} /></span><span className="setup-row-copy"><strong>Configure your network</strong><small>Create optional groupings for your hospitals.</small></span><span className="setup-status status-pending">IN HOSPITAL STUDIO</span></div>
-                  <div className="setup-row setup-row-muted"><span className="setup-number">03</span><span className="setup-row-icon"><FlaskConical size={19} /></span><span className="setup-row-copy"><strong>Generate a dataset</strong><small>Generation will be available in a future step.</small></span><span className="setup-status status-pending">COMING SOON</span></div>
+                  <button className="setup-row" onClick={() => selectSection("generate")}><span className="setup-number">03</span><span className="setup-row-icon"><FlaskConical size={19} /></span><span className="setup-row-copy"><strong>Generate a dataset</strong><small>Configure and review a synthetic operations run.</small></span><span className="setup-status">AVAILABLE <ArrowUpRight size={14} /></span></button>
                 </div>
               </section>
 

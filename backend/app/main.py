@@ -28,7 +28,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="BedSynth AI API",
-    description="Workspace-scoped hospital, department, and bed configuration API.",
+    description="Workspace-scoped Hospital Studio and deterministic synthetic operations generation API.",
     version="0.1.0",
     lifespan=lifespan,
 )

@@ -1,9 +1,11 @@
 """Validated API request and response schemas for Hospital Studio."""
 
 import re
+from datetime import date, datetime
 from typing import Literal
+from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 def normalize_code(value: str) -> str:
@@ -247,3 +249,72 @@ class BedGenerationRead(BaseModel):
     hospital_id: int
     beds_created: int
     departments: list[BedGenerationDepartmentResult]
+
+
+class GenerationConfig(BaseModel):
+    start_date: date
+    end_date: date
+    target_admissions: int = Field(ge=0, le=5000)
+    target_occupancy_pct: int = Field(ge=0, le=100)
+    seed: int = Field(ge=0, le=2_147_483_647)
+    department_ids: list[int] | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def validate_generation_window(self) -> "GenerationConfig":
+        if self.end_date < self.start_date:
+            raise ValueError("End date must be on or after the start date.")
+        if (self.end_date - self.start_date).days >= 366:
+            raise ValueError("The generation date range cannot exceed 366 calendar days.")
+        if self.target_admissions == 0 and self.target_occupancy_pct != 0:
+            raise ValueError("Set target occupancy to 0 when generating 0 admissions.")
+        if self.target_admissions > 0 and self.target_occupancy_pct == 0:
+            raise ValueError("Target occupancy must be above 0 when generating admissions.")
+        if self.department_ids is not None and len(set(self.department_ids)) != len(self.department_ids):
+            raise ValueError("Department selections must not contain duplicates.")
+        return self
+
+
+class GenerationPreviewDepartment(BaseModel):
+    department_id: int
+    department_name: str
+    operational_beds: int
+
+
+class GenerationPreviewRead(BaseModel):
+    hospital_id: int
+    hospital_name: str
+    workspace_id: int
+    start_date: date
+    end_date: date
+    target_admissions: int
+    target_occupancy_pct: int
+    seed: int
+    departments: list[GenerationPreviewDepartment]
+    total_operational_beds: int
+    planned_peak_occupied_beds: int
+    occupancy_snapshots_planned: int
+    preview_token: str
+
+
+class GenerationCreate(GenerationConfig):
+    idempotency_key: UUID
+    preview_token: str = Field(min_length=64, max_length=64)
+
+
+class GenerationRunRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    run_id: UUID
+    workspace_id: int
+    hospital_id: int
+    idempotency_key: UUID
+    config: dict
+    seed: int
+    status: Literal["generating", "completed", "failed"]
+    started_at: datetime
+    completed_at: datetime | None
+    patients_count: int
+    admissions_count: int
+    discharges_count: int
+    transfers_count: int
+    snapshots_count: int
+    error_message: str | None

@@ -1,6 +1,6 @@
 # BedSynth AI backend
 
-FastAPI Hospital Studio API using Pydantic, SQLAlchemy, and SQLite. It supports workspaces, optional hospital networks, hospitals, departments, and beds. There are no patient records, synthetic generation, or analytics endpoints.
+FastAPI Hospital Studio and synthetic operations API using Pydantic, SQLAlchemy, and SQLite. It supports workspace-owned hospitals, departments, beds, deterministic synthetic generation runs, and run history. It does not store real patient data or provide statistical utility/privacy-risk evaluation or analytics endpoints.
 
 ## Setup
 
@@ -39,12 +39,17 @@ All routes use `/api/v1`:
 - `GET /hospitals/{hospital_id}/beds`
 - `POST /hospitals/{hospital_id}/beds/generation-preview`
 - `POST /hospitals/{hospital_id}/beds/generate`
+- `POST /hospitals/{hospital_id}/generation-runs/preview`
+- `POST /hospitals/{hospital_id}/generation-runs`
+- `GET /workspaces/{workspace_id}/generation-runs`
 - `POST /hospitals/{hospital_id}/departments/{department_id}/beds`
 - `PATCH /hospitals/{hospital_id}/beds/{bed_id}`
 
 Hospital archive and restore use `PATCH` with `is_archived`. Department codes are unique per hospital; bed codes are unique per hospital. Bed creation checks that its department belongs to the path hospital and has remaining configured capacity. Deletion endpoints are intentionally absent.
 
 Bulk bed creation requires a preview followed by explicit confirmation. The preview reports non-retired inventory, remaining capacity, and the number of proposed beds per department. Confirmation includes the preview token; if inventory or capacity changed since preview, the API rejects the request and requires a fresh preview. Generated identifiers use a department-code prefix and a sequential numeric suffix, skipping any identifier already used by the hospital. New beds use category `general` and status `operational`. The batch is committed as one transaction.
+
+Synthetic generation is deterministic and single-hospital per run. Preview accepts inclusive start/end dates, a target admission count, target occupancy percentage, seed, and optional department IDs. Creation requires the preview token and an idempotency UUID. The engine creates only fictional patient IDs and age bands, admissions, discharges, bed assignment intervals, seeded transfers, and daily noon-UTC occupancy snapshots. The current transfer policy samples one in five eligible stays of at least four hours when a distinct operational destination bed is available; this is a simulator rule, not a real-world rate. All generated operational rows carry workspace and hospital IDs. The run and generated rows are committed atomically after an initial `generating` history record; failures roll back generated rows and persist a failed run. This milestone does not include real patient data, clinical details, Gemini/RAG, statistical utility evaluation, privacy-risk scoring, export, or asynchronous workers.
 
 ## Environment
 

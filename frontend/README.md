@@ -1,6 +1,6 @@
 # BedSynth AI frontend
 
-Next.js App Router frontend using TypeScript, Tailwind CSS, Lucide icons, and Recharts. Hospital Studio at `/hospitals` provides backend-connected workspace, network, hospital, department, and bed configuration. Dataset generation and analytics are not implemented.
+Next.js App Router frontend using TypeScript, Tailwind CSS, Lucide icons, and Recharts. Hospital Studio at `/hospitals` provides backend-connected workspace, network, hospital, department, and bed configuration. The Synthetic Data Generator at `/generate` provides single-hospital deterministic generation and persisted run history. Statistical utility evaluation, privacy-risk scoring, analytics, and export are not implemented in this milestone.
 
 ## Setup
 

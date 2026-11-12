@@ -11,7 +11,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session, selectinload
 
 from app.database import SessionLocal
-from app.models import Bed, Department, Hospital, HospitalNetwork, Workspace
+from app.models import Bed, Department, GenerationRun, Hospital, HospitalNetwork, Workspace
 from app.schemas import (
     BedGenerationDepartmentResult,
     BedGenerationPreviewDepartment,
@@ -19,6 +19,10 @@ from app.schemas import (
     BedGenerationPreviewRequest,
     BedGenerationRead,
     BedGenerationRequest,
+    GenerationConfig,
+    GenerationCreate,
+    GenerationPreviewRead,
+    GenerationRunRead,
     BedCreate,
     BedRead,
     BedUpdate,
@@ -33,6 +37,7 @@ from app.schemas import (
     WorkspaceCreate,
     WorkspaceRead,
 )
+from app.services.synthetic_generation import generate_dataset, preview_generation
 
 router = APIRouter(prefix="/api/v1", tags=["hospital-studio"])
 
@@ -404,6 +409,39 @@ def generate_beds(
             beds_created=row["beds_to_create"],
         ) for row in plan],
     )
+
+
+@router.post("/hospitals/{hospital_id}/generation-runs/preview", response_model=GenerationPreviewRead)
+def preview_synthetic_generation(
+    hospital_id: int,
+    payload: GenerationConfig,
+    db: Session = Depends(get_db),
+) -> GenerationPreviewRead:
+    return preview_generation(db, hospital_id, payload)
+
+
+@router.post("/hospitals/{hospital_id}/generation-runs", response_model=GenerationRunRead)
+def create_synthetic_generation(
+    hospital_id: int,
+    payload: GenerationCreate,
+    db: Session = Depends(get_db),
+) -> GenerationRun:
+    return generate_dataset(db, hospital_id, payload)
+
+
+@router.get("/workspaces/{workspace_id}/generation-runs", response_model=list[GenerationRunRead])
+def list_generation_runs(
+    workspace_id: int,
+    hospital_id: int | None = None,
+    limit: int = Query(default=50, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> list[GenerationRun]:
+    if db.get(Workspace, workspace_id) is None:
+        raise HTTPException(status_code=404, detail="Workspace not found.")
+    query = select(GenerationRun).where(GenerationRun.workspace_id == workspace_id)
+    if hospital_id is not None:
+        query = query.where(GenerationRun.hospital_id == hospital_id)
+    return list(db.scalars(query.order_by(GenerationRun.started_at.desc()).limit(limit)).all())
 
 
 @router.post("/hospitals/{hospital_id}/departments/{department_id}/beds", response_model=BedRead, status_code=201)
