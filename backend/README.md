@@ -42,6 +42,11 @@ All routes use `/api/v1`:
 - `POST /hospitals/{hospital_id}/generation-runs/preview`
 - `POST /hospitals/{hospital_id}/generation-runs`
 - `GET /workspaces/{workspace_id}/generation-runs`
+- `GET /workspaces/{workspace_id}/datasets`
+- `GET /generation-runs/{run_id}/dataset`
+- `GET /generation-runs/{run_id}/dataset/preview/{entity}`
+- `GET /generation-runs/{run_id}/dataset/export/{entity}`
+- `GET /generation-runs/{run_id}/dataset/manifest`
 - `GET /analytics/hospitals/{hospital_id}/overview`
 - `GET /analytics/hospitals/{hospital_id}/occupancy`
 - `GET /analytics/hospitals/{hospital_id}/patient-flow`
@@ -56,7 +61,11 @@ Hospital archive and restore use `PATCH` with `is_archived`. Department codes ar
 
 Bulk bed creation requires a preview followed by explicit confirmation. The preview reports non-retired inventory, remaining capacity, and the number of proposed beds per department. Confirmation includes the preview token; if inventory or capacity changed since preview, the API rejects the request and requires a fresh preview. Generated identifiers use a department-code prefix and a sequential numeric suffix, skipping any identifier already used by the hospital. New beds use category `general` and status `operational`. The batch is committed as one transaction.
 
-Synthetic generation is deterministic and single-hospital per run. Preview accepts inclusive start/end dates, a target admission count, target occupancy percentage, seed, and optional department IDs. Creation requires the preview token and an idempotency UUID. The engine creates only fictional patient IDs and age bands, admissions, discharges, bed assignment intervals, seeded transfers, and daily noon-UTC occupancy snapshots. The current transfer policy samples one in five eligible stays of at least four hours when a distinct operational destination bed is available; this is a simulator rule, not a real-world rate. All generated operational rows carry workspace and hospital IDs. The run and generated rows are committed atomically after an initial `generating` history record; failures roll back generated rows and persist a failed run. This milestone does not include real patient data, clinical details, Gemini/RAG, statistical utility evaluation, privacy-risk scoring, export, or asynchronous workers.
+Synthetic generation is deterministic and single-hospital per run. Preview accepts inclusive start/end dates, a target admission count, target occupancy percentage, seed, and optional department IDs. Creation requires the preview token and an idempotency UUID. The engine creates only fictional patient IDs and age bands, admissions, discharges, bed assignment intervals, seeded transfers, and daily noon-UTC occupancy snapshots. The current transfer policy samples one in five eligible stays of at least four hours when a distinct operational destination bed is available; this is a simulator rule, not a real-world rate. All generated operational rows carry workspace and hospital IDs. The run and generated rows are committed atomically after an initial `generating` history record; failures roll back generated rows and persist a failed run. This milestone does not include real patient data, clinical details, Gemini/RAG, statistical utility evaluation, privacy-risk scoring, ZIP export, or asynchronous workers.
+
+### Dataset library and exports
+
+The read-only Dataset Manager lists generation runs within one workspace and supports hospital/status filters, hospital or run-ID search, start-time ordering, and pagination. Run details return persisted configuration, per-entity row counts, selected departments, validation reports, and occupancy summary metrics derived from that run's persisted snapshots. Dataset preview and export endpoints scope every query by run, workspace, and hospital; previews are paginated and CSV responses stream one entity at a time. The six CSV entity names are `patients`, `admissions`, `discharges`, `bed_assignments`, `bed_transfers`, and `occupancy_snapshots`. CSV headers use stable field ordering and null values are blank. The JSON manifest contains recorded run configuration, counts, validation summaries, and available version fields. It reports reproducibility as false if the run is incomplete or lacks a recorded generator or dataset schema version. ZIP bundles and cross-workspace dataset views are not provided.
 
 ### Analytics semantics and current limitations
 

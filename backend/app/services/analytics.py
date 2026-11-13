@@ -185,6 +185,27 @@ def _occupancy_stats(items: list[dict]) -> tuple[float | None, float | None]:
     return round(sum(values) / len(values), 2), round(max(values), 2)
 
 
+def get_run_snapshot_summary(db: Session, run: GenerationRun) -> dict:
+    """Summarize occupancy snapshots belonging only to this generation run."""
+    snapshots = list(db.scalars(select(OccupancySnapshot).where(
+        OccupancySnapshot.run_id == run.run_id,
+        OccupancySnapshot.workspace_id == run.workspace_id,
+        OccupancySnapshot.hospital_id == run.hospital_id,
+    ).order_by(OccupancySnapshot.snapshot_at, OccupancySnapshot.id)).all())
+    daily, _ = _daily_occupancy(snapshots)
+    average, peak = _occupancy_stats(daily)
+    latest = daily[-1] if daily else None
+    return {
+        "latest_snapshot_date": latest["date"] if latest else None,
+        "latest_occupancy_pct": latest["occupancy_pct"] if latest else None,
+        "average_occupancy_pct": average,
+        "peak_occupancy_pct": peak,
+        "occupied_beds_latest": latest["occupied_beds"] if latest else None,
+        "available_beds_latest": latest["available_beds"] if latest else None,
+        "recorded_days": len(daily),
+    }
+
+
 def get_overview(db: Session, hospital_id: int, filters: AnalyticsFilters) -> dict:
     context = _context(db, hospital_id, filters)
     snapshots = _snapshots(db, context)

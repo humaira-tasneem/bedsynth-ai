@@ -115,10 +115,11 @@ export default function HomePage() {
     else if (id === "generate") router.push("/generate");
     else if (id === "analytics") router.push("/analytics");
     else if (id === "validation") router.push("/validation");
+    else if (id === "datasets") router.push("/datasets");
     else if (pathname !== "/") router.push("/");
   }
 
-  const currentSection = pathname === "/hospitals" ? "hospitals" : pathname === "/generate" ? "generate" : pathname === "/analytics" ? "analytics" : pathname === "/validation" ? "validation" : active;
+  const currentSection = pathname === "/hospitals" ? "hospitals" : pathname === "/generate" ? "generate" : pathname === "/analytics" ? "analytics" : pathname === "/validation" ? "validation" : pathname.startsWith("/datasets") ? "datasets" : active;
   const selectedLabel = navigation.find((item) => item.id === currentSection)?.label ?? "Settings";
 
   return (

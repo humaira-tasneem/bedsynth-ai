@@ -458,3 +458,86 @@ class DepartmentUtilizationRead(BaseModel):
 class AnalyticsDepartmentsRead(BaseModel):
     metadata: AnalyticsMetadata
     items: list[DepartmentUtilizationRead]
+
+
+class DatasetRecordCounts(BaseModel):
+    patients: int = 0
+    admissions: int = 0
+    discharges: int = 0
+    bed_assignments: int = 0
+    bed_transfers: int = 0
+    occupancy_snapshots: int = 0
+
+
+class DatasetValidationSummary(BaseModel):
+    validation_id: UUID
+    validated_at: datetime
+    score: float
+    status: Literal["passed", "passed_with_warnings", "failed"]
+    checks_performed: int
+    checks_passed: int
+    checks_failed: int
+
+
+class DatasetDepartmentRead(BaseModel):
+    department_id: int
+    code: str
+    name: str
+
+
+class DatasetAnalyticsSummary(BaseModel):
+    latest_snapshot_date: date | None
+    latest_occupancy_pct: float | None
+    average_occupancy_pct: float | None
+    peak_occupancy_pct: float | None
+    occupied_beds_latest: int | None
+    available_beds_latest: int | None
+    recorded_days: int
+
+
+class DatasetListItem(BaseModel):
+    run_id: UUID
+    workspace_id: int
+    hospital_id: int
+    hospital_name: str
+    started_at: datetime
+    completed_at: datetime | None
+    status: Literal["generating", "completed", "failed"]
+    seed: int
+    configured_start_date: date | None
+    configured_end_date: date | None
+    target_occupancy_pct: int | None
+    generator_version: str | None
+    record_counts: DatasetRecordCounts
+    latest_validation: DatasetValidationSummary | None
+
+
+class DatasetLibraryRead(BaseModel):
+    items: list[DatasetListItem]
+    total: int
+    page: int
+    page_size: int
+    pages: int
+
+
+class DatasetRunDetailRead(DatasetListItem):
+    generation_config: dict
+    selected_departments: list[DatasetDepartmentRead]
+    validation_reports: list[DatasetValidationSummary]
+    analytics_summary: DatasetAnalyticsSummary
+
+
+class DatasetPreviewColumn(BaseModel):
+    key: str
+    label: str
+
+
+class DatasetPreviewRead(BaseModel):
+    run_id: UUID
+    entity: Literal["patients", "admissions", "discharges", "bed_assignments", "bed_transfers", "occupancy_snapshots"]
+    columns: list[DatasetPreviewColumn]
+    items: list[dict]
+    total: int
+    page: int
+    page_size: int
+    pages: int
