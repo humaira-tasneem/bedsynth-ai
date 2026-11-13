@@ -318,3 +318,45 @@ class GenerationRunRead(BaseModel):
     transfers_count: int
     snapshots_count: int
     error_message: str | None
+
+
+ValidationCategory = Literal[
+    "completeness", "uniqueness", "referential_integrity", "temporal_validity",
+    "bed_assignment_consistency", "capacity_consistency", "occupancy_accuracy",
+]
+ValidationSeverity = Literal["critical", "high", "medium", "low"]
+
+
+class ValidationIssueRead(BaseModel):
+    category: ValidationCategory
+    severity: ValidationSeverity
+    code: str
+    message: str
+    entity_type: str | None = None
+    entity_id: str | int | None = None
+
+
+class ValidationCategoryRead(BaseModel):
+    category: ValidationCategory
+    weight: float
+    checks_performed: int
+    checks_passed: int
+    checks_failed: int
+    issue_count: int
+    score: float
+
+
+class ValidationReportRead(BaseModel):
+    validation_id: UUID
+    run_id: UUID
+    workspace_id: int
+    hospital_id: int
+    validated_at: datetime
+    score: float
+    checks_performed: int
+    checks_passed: int
+    checks_failed: int
+    warning_count: int
+    status: Literal["passed", "passed_with_warnings", "failed"]
+    categories: list[ValidationCategoryRead]
+    issues: list[ValidationIssueRead]

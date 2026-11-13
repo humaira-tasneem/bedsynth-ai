@@ -11,7 +11,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session, selectinload
 
 from app.database import SessionLocal
-from app.models import Bed, Department, GenerationRun, Hospital, HospitalNetwork, Workspace
+from app.models import Bed, Department, GenerationRun, Hospital, HospitalNetwork, ValidationReport, Workspace
 from app.schemas import (
     BedGenerationDepartmentResult,
     BedGenerationPreviewDepartment,
@@ -36,8 +36,10 @@ from app.schemas import (
     NetworkRead,
     WorkspaceCreate,
     WorkspaceRead,
+    ValidationReportRead,
 )
 from app.services.synthetic_generation import generate_dataset, preview_generation
+from app.services.data_validation import persist_validation
 
 router = APIRouter(prefix="/api/v1", tags=["hospital-studio"])
 
@@ -442,6 +444,28 @@ def list_generation_runs(
     if hospital_id is not None:
         query = query.where(GenerationRun.hospital_id == hospital_id)
     return list(db.scalars(query.order_by(GenerationRun.started_at.desc()).limit(limit)).all())
+
+
+@router.post("/generation-runs/{run_id}/validations", response_model=ValidationReportRead, status_code=201)
+def validate_generation_run(run_id: str, db: Session = Depends(get_db)) -> ValidationReport:
+    """Evaluate persisted run records and save a separate report."""
+    return persist_validation(db, run_id)
+
+
+@router.get("/generation-runs/{run_id}/validations", response_model=list[ValidationReportRead])
+def list_generation_run_validations(run_id: str, db: Session = Depends(get_db)) -> list[ValidationReport]:
+    if db.get(GenerationRun, run_id) is None:
+        raise HTTPException(status_code=404, detail="Generation run not found.")
+    return list(db.scalars(select(ValidationReport).where(ValidationReport.run_id == run_id)
+                           .order_by(ValidationReport.validated_at.desc())).all())
+
+
+@router.get("/validations/{validation_id}", response_model=ValidationReportRead)
+def get_validation(validation_id: str, db: Session = Depends(get_db)) -> ValidationReport:
+    report = db.get(ValidationReport, validation_id)
+    if report is None:
+        raise HTTPException(status_code=404, detail="Validation report not found.")
+    return report
 
 
 @router.post("/hospitals/{hospital_id}/departments/{department_id}/beds", response_model=BedRead, status_code=201)

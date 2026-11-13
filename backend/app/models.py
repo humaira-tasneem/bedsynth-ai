@@ -113,6 +113,7 @@ class GenerationRun(Base):
     patients: Mapped[list["SyntheticPatient"]] = relationship(back_populates="run")
     admissions: Mapped[list["Admission"]] = relationship(back_populates="run")
     occupancy_snapshots: Mapped[list["OccupancySnapshot"]] = relationship(back_populates="run")
+    validation_reports: Mapped[list["ValidationReport"]] = relationship(back_populates="run")
 
 
 class SyntheticPatient(Base):
@@ -236,3 +237,25 @@ class OccupancySnapshot(Base):
     available_beds: Mapped[int] = mapped_column(Integer, nullable=False)
     occupancy_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     run: Mapped[GenerationRun] = relationship(back_populates="occupancy_snapshots")
+
+
+class ValidationReport(Base):
+    """Immutable validation result for a persisted generation run."""
+
+    __tablename__ = "validation_reports"
+    __table_args__ = (Index("ix_validation_report_run_date", "run_id", "validated_at"),)
+
+    validation_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("generation_runs.run_id", ondelete="CASCADE"), nullable=False, index=True)
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id", ondelete="RESTRICT"), nullable=False, index=True)
+    hospital_id: Mapped[int] = mapped_column(ForeignKey("hospitals.id", ondelete="RESTRICT"), nullable=False, index=True)
+    validated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    score: Mapped[float] = mapped_column(Float, nullable=False)
+    checks_performed: Mapped[int] = mapped_column(Integer, nullable=False)
+    checks_passed: Mapped[int] = mapped_column(Integer, nullable=False)
+    checks_failed: Mapped[int] = mapped_column(Integer, nullable=False)
+    warning_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False)
+    categories: Mapped[list] = mapped_column(JSON, nullable=False)
+    issues: Mapped[list] = mapped_column(JSON, nullable=False)
+    run: Mapped[GenerationRun] = relationship(back_populates="validation_reports")

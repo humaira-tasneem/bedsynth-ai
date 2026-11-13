@@ -20,7 +20,7 @@ import {
 } from "lucide-react";
 
 type HealthState = "checking" | "online" | "offline";
-type SectionId = "overview" | "network" | "hospitals" | "generate" | "datasets" | "settings";
+type SectionId = "overview" | "network" | "hospitals" | "generate" | "validation" | "datasets" | "settings";
 type WorkspaceSummary = { hospitals: number; departments: number; beds: number };
 
 const navigation: { id: SectionId; label: string; icon: typeof LayoutDashboard }[] = [
@@ -28,6 +28,7 @@ const navigation: { id: SectionId; label: string; icon: typeof LayoutDashboard }
   { id: "network", label: "Hospital network", icon: Network },
   { id: "hospitals", label: "Hospital Studio", icon: Building2 },
   { id: "generate", label: "Generate dataset", icon: FlaskConical },
+  { id: "validation", label: "Data validation", icon: ShieldCheck },
   { id: "datasets", label: "Datasets", icon: Database },
 ];
 
@@ -110,10 +111,11 @@ export default function HomePage() {
     setMobileOpen(false);
     if (id === "hospitals") router.push("/hospitals");
     else if (id === "generate") router.push("/generate");
+    else if (id === "validation") router.push("/validation");
     else if (pathname !== "/") router.push("/");
   }
 
-  const currentSection = pathname === "/hospitals" ? "hospitals" : pathname === "/generate" ? "generate" : active;
+  const currentSection = pathname === "/hospitals" ? "hospitals" : pathname === "/generate" ? "generate" : pathname === "/validation" ? "validation" : active;
   const selectedLabel = navigation.find((item) => item.id === currentSection)?.label ?? "Settings";
 
   return (

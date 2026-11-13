@@ -220,7 +220,7 @@ export default function SyntheticDataGeneratorPage() {
     <main className="generator-page" id="main-content">
       <header className="generator-topbar">
         <Link href="/" className="generator-brand"><span className="generator-brand-mark"><Activity size={19} /></span><span>BedSynth <strong>AI</strong></span></Link>
-        <nav aria-label="Workspace navigation"><Link href="/" className="generator-nav-link"><ArrowLeft size={15} /> Overview</Link><Link href="/hospitals" className="generator-nav-link">Hospital Studio <ArrowUpRight size={14} /></Link></nav>
+        <nav aria-label="Workspace navigation"><Link href="/" className="generator-nav-link"><ArrowLeft size={15} /> Overview</Link><Link href="/hospitals" className="generator-nav-link">Hospital Studio <ArrowUpRight size={14} /></Link><Link href="/validation" className="generator-nav-link">Data validation <ArrowUpRight size={14} /></Link></nav>
       </header>
 
       <div className="generator-content">
