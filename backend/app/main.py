@@ -11,6 +11,7 @@ from sqlalchemy import text
 from app.database import engine, initialize_database
 from app import models  # noqa: F401 - registers tables with Base.metadata
 from app.routes import router as hospital_studio_router
+from app.analytics_routes import router as analytics_router
 
 
 class HealthResponse(BaseModel):
@@ -42,6 +43,7 @@ app.add_middleware(
     allow_headers=["Content-Type", "Authorization"],
 )
 app.include_router(hospital_studio_router)
+app.include_router(analytics_router)
 
 
 @app.get("/health", response_model=HealthResponse, tags=["system"])

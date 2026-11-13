@@ -7,6 +7,7 @@ import {
   ArrowUpRight,
   BedDouble,
   Building2,
+  BarChart3,
   Database,
   FlaskConical,
   LayoutDashboard,
@@ -20,7 +21,7 @@ import {
 } from "lucide-react";
 
 type HealthState = "checking" | "online" | "offline";
-type SectionId = "overview" | "network" | "hospitals" | "generate" | "validation" | "datasets" | "settings";
+type SectionId = "overview" | "network" | "hospitals" | "generate" | "analytics" | "validation" | "datasets" | "settings";
 type WorkspaceSummary = { hospitals: number; departments: number; beds: number };
 
 const navigation: { id: SectionId; label: string; icon: typeof LayoutDashboard }[] = [
@@ -28,6 +29,7 @@ const navigation: { id: SectionId; label: string; icon: typeof LayoutDashboard }
   { id: "network", label: "Hospital network", icon: Network },
   { id: "hospitals", label: "Hospital Studio", icon: Building2 },
   { id: "generate", label: "Generate dataset", icon: FlaskConical },
+  { id: "analytics", label: "Analytics", icon: BarChart3 },
   { id: "validation", label: "Data validation", icon: ShieldCheck },
   { id: "datasets", label: "Datasets", icon: Database },
 ];
@@ -111,11 +113,12 @@ export default function HomePage() {
     setMobileOpen(false);
     if (id === "hospitals") router.push("/hospitals");
     else if (id === "generate") router.push("/generate");
+    else if (id === "analytics") router.push("/analytics");
     else if (id === "validation") router.push("/validation");
     else if (pathname !== "/") router.push("/");
   }
 
-  const currentSection = pathname === "/hospitals" ? "hospitals" : pathname === "/generate" ? "generate" : pathname === "/validation" ? "validation" : active;
+  const currentSection = pathname === "/hospitals" ? "hospitals" : pathname === "/generate" ? "generate" : pathname === "/analytics" ? "analytics" : pathname === "/validation" ? "validation" : active;
   const selectedLabel = navigation.find((item) => item.id === currentSection)?.label ?? "Settings";
 
   return (
@@ -172,7 +175,7 @@ export default function HomePage() {
             <>
               <div className="page-heading">
                 <div><div className="page-kicker"><span className="kicker-line" /> HOSPITAL OPERATIONS DATA</div><h1>Good morning</h1><p className="page-subtitle">Your workspace for configuring and exploring synthetic hospital operations.</p></div>
-                <button className="button button-primary" onClick={() => selectSection("hospitals")}><Building2 size={17} /> Set up a hospital <ArrowUpRight size={16} /></button>
+                <div className="page-heading-actions"><button className="button button-secondary" onClick={() => selectSection("analytics")}><BarChart3 size={17} /> View analytics <ArrowUpRight size={16} /></button><button className="button button-primary" onClick={() => selectSection("hospitals")}><Building2 size={17} /> Set up a hospital <ArrowUpRight size={16} /></button></div>
               </div>
 
               <section className="welcome-banner" aria-labelledby="welcome-title">

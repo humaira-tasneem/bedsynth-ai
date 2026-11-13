@@ -360,3 +360,101 @@ class ValidationReportRead(BaseModel):
     status: Literal["passed", "passed_with_warnings", "failed"]
     categories: list[ValidationCategoryRead]
     issues: list[ValidationIssueRead]
+
+
+class AnalyticsFilters(BaseModel):
+    start_date: date | None = None
+    end_date: date | None = None
+    department_id: int | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def validate_date_order(self) -> "AnalyticsFilters":
+        if (self.start_date is None) != (self.end_date is None):
+            raise ValueError("Provide both start_date and end_date, or omit both to use the selected run's reporting period.")
+        if self.start_date is not None and self.end_date is not None:
+            if self.end_date < self.start_date:
+                raise ValueError("End date must be on or after start date.")
+            if (self.end_date - self.start_date).days > 365:
+                raise ValueError("Analytics date range cannot exceed 366 calendar days.")
+        return self
+
+
+class AnalyticsMetadata(BaseModel):
+    hospital_id: int
+    hospital_name: str
+    run_id: UUID | None
+    run_started_at: datetime | None
+    seed: int | None
+    department_id: int | None
+    department_name: str | None
+    start_date: date | None
+    end_date: date | None
+    time_zone: Literal["UTC"] = "UTC"
+    snapshot_cadence: str = "daily at 12:00 UTC"
+    has_data: bool
+
+
+class AnalyticsOverviewMetrics(BaseModel):
+    operational_beds: int
+    occupied_beds_latest: int | None
+    available_beds_latest: int | None
+    latest_occupancy_pct: float | None
+    latest_occupancy_date: date | None
+    departments_reporting_latest: int
+    departments_expected: int
+    average_occupancy_pct: float | None
+    peak_occupancy_pct: float | None
+    admissions: int
+    discharges: int
+    transfers: int
+    occupancy_snapshots: int
+
+
+class AnalyticsOverviewRead(BaseModel):
+    metadata: AnalyticsMetadata
+    metrics: AnalyticsOverviewMetrics
+
+
+class DailyOccupancyRead(BaseModel):
+    date: date
+    operational_beds: int
+    occupied_beds: int
+    available_beds: int
+    occupancy_pct: float | None
+    departments_reporting: int
+    snapshot_count: int
+
+
+class AnalyticsOccupancyRead(BaseModel):
+    metadata: AnalyticsMetadata
+    items: list[DailyOccupancyRead]
+
+
+class DailyPatientFlowRead(BaseModel):
+    date: date
+    admissions: int
+    discharges: int
+    transfers: int
+
+
+class AnalyticsPatientFlowRead(BaseModel):
+    metadata: AnalyticsMetadata
+    items: list[DailyPatientFlowRead]
+
+
+class DepartmentUtilizationRead(BaseModel):
+    department_id: int
+    department_name: str
+    department_code: str
+    operational_beds: int
+    occupied_beds_latest: int | None
+    available_beds_latest: int | None
+    latest_occupancy_pct: float | None
+    average_occupancy_pct: float | None
+    peak_occupancy_pct: float | None
+    snapshots: int
+
+
+class AnalyticsDepartmentsRead(BaseModel):
+    metadata: AnalyticsMetadata
+    items: list[DepartmentUtilizationRead]
