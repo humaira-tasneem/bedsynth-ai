@@ -7,15 +7,46 @@ from sqlalchemy.orm import Session
 
 from app.routes import get_db
 from app.schemas import (
+    AnalyticsComparisonRead,
+    AnalyticsComparisonRequest,
     AnalyticsDepartmentsRead,
     AnalyticsFilters,
+    AnalyticsInsightsRead,
     AnalyticsOccupancyRead,
     AnalyticsOverviewRead,
     AnalyticsPatientFlowRead,
+    AnalyticsRunOptionsRead,
 )
-from app.services.analytics import get_departments, get_occupancy, get_overview, get_patient_flow
+from app.services.analytics import (
+    compare_analytics_runs,
+    get_departments,
+    get_occupancy,
+    get_overview,
+    get_patient_flow,
+    get_rule_based_insights,
+    list_analytics_runs,
+)
 
 router = APIRouter(prefix="/api/v1/analytics", tags=["analytics"])
+
+
+@router.get("/hospitals/{hospital_id}/runs", response_model=AnalyticsRunOptionsRead)
+def hospital_analytics_runs(hospital_id: int, db: Session = Depends(get_db)) -> dict:
+    return {"items": list_analytics_runs(db, hospital_id)}
+
+
+@router.post("/runs/compare", response_model=AnalyticsComparisonRead)
+def compare_runs(request: AnalyticsComparisonRequest, db: Session = Depends(get_db)) -> dict:
+    return compare_analytics_runs(db, request)
+
+
+@router.get("/hospitals/{hospital_id}/insights", response_model=AnalyticsInsightsRead)
+def hospital_analytics_insights(
+    hospital_id: int,
+    filters: Annotated[AnalyticsFilters, Query()],
+    db: Session = Depends(get_db),
+) -> dict:
+    return get_rule_based_insights(db, hospital_id, filters)
 
 
 @router.get("/hospitals/{hospital_id}/overview", response_model=AnalyticsOverviewRead)

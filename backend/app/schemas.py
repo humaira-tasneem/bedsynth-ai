@@ -432,6 +432,8 @@ class AnalyticsFilters(BaseModel):
     start_date: date | None = None
     end_date: date | None = None
     department_id: int | None = Field(default=None, gt=0)
+    run_id: UUID | None = None
+    scenario: Literal["normal_operations", "high_patient_inflow", "seasonal_disease_surge", "emergency_surge", "low_occupancy"] | None = None
 
     @model_validator(mode="after")
     def validate_date_order(self) -> "AnalyticsFilters":
@@ -451,6 +453,9 @@ class AnalyticsMetadata(BaseModel):
     run_id: UUID | None
     run_started_at: datetime | None
     seed: int | None
+    scenario: str | None = None
+    scenario_name: str | None = None
+    patient_profile: dict | None = None
     department_id: int | None
     department_name: str | None
     start_date: date | None
@@ -470,6 +475,8 @@ class AnalyticsOverviewMetrics(BaseModel):
     departments_expected: int
     average_occupancy_pct: float | None
     peak_occupancy_pct: float | None
+    lowest_occupancy_pct: float | None
+    average_length_of_stay_hours: float | None
     admissions: int
     discharges: int
     transfers: int
@@ -479,6 +486,7 @@ class AnalyticsOverviewMetrics(BaseModel):
 class AnalyticsOverviewRead(BaseModel):
     metadata: AnalyticsMetadata
     metrics: AnalyticsOverviewMetrics
+    insights: list[dict] = Field(default_factory=list)
 
 
 class DailyOccupancyRead(BaseModel):
@@ -518,12 +526,119 @@ class DepartmentUtilizationRead(BaseModel):
     latest_occupancy_pct: float | None
     average_occupancy_pct: float | None
     peak_occupancy_pct: float | None
+    lowest_occupancy_pct: float | None = None
     snapshots: int
+    admissions: int = 0
+    admission_share_pct: float | None = None
+    incoming_transfers: int = 0
+    outgoing_transfers: int = 0
+    daily_occupancy: list[dict] = Field(default_factory=list)
 
 
 class AnalyticsDepartmentsRead(BaseModel):
     metadata: AnalyticsMetadata
     items: list[DepartmentUtilizationRead]
+    transfer_routes: list[dict] = Field(default_factory=list)
+
+
+class AnalyticsRunOption(BaseModel):
+    run_id: UUID
+    hospital_id: int
+    hospital_name: str
+    started_at: datetime
+    completed_at: datetime
+    start_date: date | None
+    end_date: date | None
+    scenario: str | None
+    scenario_name: str | None
+    seed: int
+    patient_profile: dict | None
+    patients_count: int
+    admissions_count: int
+    departments: list[dict]
+
+
+class AnalyticsRunOptionsRead(BaseModel):
+    items: list[AnalyticsRunOption]
+
+
+class AnalyticsComparisonRequest(BaseModel):
+    run_ids: list[UUID] = Field(min_length=2, max_length=10)
+    baseline_run_id: UUID | None = None
+    start_date: date | None = None
+    end_date: date | None = None
+    department_id: int | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def validate_comparison(self) -> "AnalyticsComparisonRequest":
+        if len(set(self.run_ids)) != len(self.run_ids):
+            raise ValueError("Select each generation run only once.")
+        if self.baseline_run_id is not None and self.baseline_run_id not in self.run_ids:
+            raise ValueError("The baseline run must be included in the comparison.")
+        if (self.start_date is None) != (self.end_date is None):
+            raise ValueError("Provide both comparison dates or omit both to use each run's full period.")
+        if self.start_date and self.end_date:
+            if self.end_date < self.start_date:
+                raise ValueError("End date must be on or after the start date.")
+            if (self.end_date - self.start_date).days > 365:
+                raise ValueError("Analytics date range cannot exceed 366 calendar days.")
+        return self
+
+
+class AnalyticsComparedDepartment(BaseModel):
+    department_id: int
+    department_name: str
+    department_code: str
+    admissions: int
+    admission_share_pct: float | None
+    average_occupancy_pct: float | None
+    peak_occupancy_pct: float | None
+    lowest_occupancy_pct: float | None = None
+    incoming_transfers: int
+    outgoing_transfers: int
+    daily_occupancy: list[dict] = Field(default_factory=list)
+
+
+class AnalyticsComparedRun(BaseModel):
+    run_id: UUID
+    hospital_id: int
+    hospital_name: str
+    workspace_id: int
+    start_date: date | None
+    end_date: date | None
+    scenario: str | None
+    scenario_name: str | None
+    patient_profile: dict | None
+    seed: int
+    patients: int
+    admissions: int
+    discharges: int
+    transfers: int
+    average_occupancy_pct: float | None
+    peak_occupancy_pct: float | None
+    lowest_occupancy_pct: float | None
+    average_length_of_stay_hours: float | None
+    departments: list[AnalyticsComparedDepartment]
+    transfer_routes: list[dict]
+    occupancy_trend: list[DailyOccupancyRead]
+    metrics_vs_baseline: dict[str, dict[str, float | None]]
+
+
+class AnalyticsComparisonRead(BaseModel):
+    baseline_run_id: UUID
+    items: list[AnalyticsComparedRun]
+
+
+class AnalyticsInsight(BaseModel):
+    kind: str
+    text: str
+    source: Literal["calculated_rule"] = "calculated_rule"
+    metrics: dict[str, int | float | str | None]
+
+
+class AnalyticsInsightsRead(BaseModel):
+    run_id: UUID
+    items: list[AnalyticsInsight]
 
 
 class DatasetRecordCounts(BaseModel):

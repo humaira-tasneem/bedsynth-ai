@@ -205,3 +205,126 @@ def test_invalid_date_ranges_and_missing_hospitals_return_http_errors(analytics_
     _, hospital_id, _, _ = create_run(analytics_client)
     assert endpoint(analytics_client, hospital_id, "overview", "?start_date=2025-01-03&end_date=2025-01-01").status_code == 422
     assert endpoint(analytics_client, hospital_id, "overview", "?start_date=2025-01-01").status_code == 422
+
+
+def test_exact_run_and_scenario_filters_select_persisted_run(analytics_client):
+    _, hospital_id, departments, first = create_run(analytics_client, admissions=4)
+    config = generation_config(departments, admissions=2, seed=918)
+    config["scenario"] = "high_patient_inflow"
+    second = preview_and_generate(analytics_client, hospital_id, config)
+    run_options = endpoint(analytics_client, hospital_id, "runs").json()["items"]
+    assert [item["run_id"] for item in run_options] == [second["run_id"], first["run_id"]]
+    assert run_options[0]["scenario"] == "high_patient_inflow"
+    assert run_options[0]["scenario_name"] == "High Patient Inflow"
+    selected = endpoint(analytics_client, hospital_id, "overview", f"?run_id={first['run_id']}")
+    assert selected.status_code == 200, selected.text
+    assert selected.json()["metadata"]["run_id"] == first["run_id"]
+    assert selected.json()["metadata"]["scenario"] == "normal_operations"
+    scenario = endpoint(analytics_client, hospital_id, "overview", "?scenario=high_patient_inflow")
+    assert scenario.status_code == 200 and scenario.json()["metadata"]["run_id"] == second["run_id"]
+    mismatch = endpoint(analytics_client, hospital_id, "overview", f"?run_id={first['run_id']}&scenario=low_occupancy")
+    assert mismatch.status_code == 422
+
+
+def test_compare_runs_reports_actual_metrics_metadata_and_percent_changes(analytics_client):
+    _, hospital_id, departments, baseline = create_run(analytics_client, admissions=4)
+    config = generation_config(departments, admissions=2, seed=918)
+    config["scenario"] = "emergency_surge"
+    compared = preview_and_generate(analytics_client, hospital_id, config)
+    response = analytics_client.post("/api/v1/analytics/runs/compare", json={
+        "run_ids": [baseline["run_id"], compared["run_id"]],
+        "baseline_run_id": baseline["run_id"],
+    })
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["baseline_run_id"] == baseline["run_id"]
+    assert [item["run_id"] for item in payload["items"]] == [baseline["run_id"], compared["run_id"]]
+    first, second = payload["items"]
+    assert first["scenario_name"] == "Normal Operations"
+    assert second["scenario_name"] == "Emergency Surge"
+    assert first["patient_profile"] == baseline["config"]["request"]["patient_profile"]
+    assert first["patients"] == baseline["patients_count"] and second["patients"] == compared["patients_count"]
+    patient_difference = compared["patients_count"] - baseline["patients_count"]
+    assert second["metrics_vs_baseline"]["patients"] == {
+        "absolute_difference": patient_difference,
+        "percentage_change": round(patient_difference / baseline["patients_count"] * 100, 2),
+    }
+    assert second["metrics_vs_baseline"]["average_occupancy_pct"]["percentage_change"] is not None
+    assert all(item["occupancy_trend"] for item in payload["items"])
+    assert all(item["departments"] for item in payload["items"])
+
+
+def test_compare_rejects_cross_hospital_or_different_department_scope(analytics_client):
+    _, hospital_id, first_departments, first = create_run(analytics_client)
+    _, other_hospital, _, other = create_run(analytics_client)
+    response = analytics_client.post("/api/v1/analytics/runs/compare", json={"run_ids": [first["run_id"], other["run_id"]]})
+    assert response.status_code == 422
+    scoped = generation_config(first_departments, admissions=1)
+    scoped["department_ids"] = [first_departments[0]["id"]]
+    narrowed = preview_and_generate(analytics_client, hospital_id, scoped)
+    response = analytics_client.post("/api/v1/analytics/runs/compare", json={"run_ids": [first["run_id"], narrowed["run_id"]]})
+    assert response.status_code == 422
+
+
+def test_department_admission_distribution_and_transfer_activity_use_events(analytics_client):
+    _, hospital_id, _, run = create_run(analytics_client, admissions=8)
+    response = endpoint(analytics_client, hospital_id, "departments")
+    assert response.status_code == 200, response.text
+    rows = response.json()["items"]
+    assert sum(row["admissions"] for row in rows) == run["admissions_count"]
+    assert sum(row["admission_share_pct"] for row in rows) == pytest.approx(100)
+    assert sum(row["outgoing_transfers"] for row in rows) == run["transfers_count"]
+    assert sum(row["incoming_transfers"] for row in rows) == run["transfers_count"]
+
+
+def test_rule_based_insights_are_derived_from_metrics_only(analytics_client):
+    _, hospital_id, _, run = create_run(analytics_client, admissions=4)
+    response = endpoint(analytics_client, hospital_id, "insights")
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["run_id"] == run["run_id"]
+    assert payload["items"]
+    assert all(item["source"] == "calculated_rule" and item["metrics"] for item in payload["items"])
+    assert all("synthetic_patient_id" not in item["text"] for item in payload["items"])
+
+
+def test_analytics_scenario_filter_covers_each_stored_scenario(analytics_client):
+    _, hospital_id, departments = make_hospital(analytics_client, department_count=1, beds_per_department=10)
+    scenarios = ("normal_operations", "high_patient_inflow", "seasonal_disease_surge", "emergency_surge", "low_occupancy")
+    generated = {}
+    for index, scenario in enumerate(scenarios):
+        config = generation_config(departments, admissions=4, seed=300 + index)
+        config["scenario"] = scenario
+        generated[scenario] = preview_and_generate(analytics_client, hospital_id, config)
+    for scenario in scenarios:
+        response = endpoint(analytics_client, hospital_id, "overview", f"?scenario={scenario}")
+        assert response.status_code == 200, response.text
+        assert response.json()["metadata"]["run_id"] == generated[scenario]["run_id"]
+        assert response.json()["metadata"]["scenario"] == scenario
+
+
+def test_comparison_handles_zero_baseline_and_period_filter_safely(analytics_client):
+    _, hospital_id, departments = make_hospital(analytics_client, department_count=1, beds_per_department=3)
+    zero = preview_and_generate(analytics_client, hospital_id, generation_config(departments, admissions=0, seed=91))
+    positive_config = generation_config(departments, admissions=2, seed=92)
+    positive = preview_and_generate(analytics_client, hospital_id, positive_config)
+    response = analytics_client.post("/api/v1/analytics/runs/compare", json={
+        "run_ids": [zero["run_id"], positive["run_id"]],
+        "baseline_run_id": zero["run_id"],
+        "start_date": "2025-01-01",
+        "end_date": "2025-01-02",
+    })
+    assert response.status_code == 200, response.text
+    baseline, changed = response.json()["items"]
+    assert baseline["patients"] == 0
+    assert changed["metrics_vs_baseline"]["patients"]["absolute_difference"] == positive["patients_count"]
+    assert changed["metrics_vs_baseline"]["patients"]["percentage_change"] is None
+    assert baseline["average_occupancy_pct"] == 0
+    assert changed["metrics_vs_baseline"]["average_occupancy_pct"]["percentage_change"] is None
+    assert changed["average_length_of_stay_hours"] is not None
+
+
+def test_insights_returns_http_error_when_no_run_matches_filters(analytics_client):
+    _, hospital_id, _ = make_hospital(analytics_client, department_count=1)
+    response = endpoint(analytics_client, hospital_id, "insights")
+    assert response.status_code == 404
