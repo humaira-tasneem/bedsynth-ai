@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import random
+from bisect import bisect_right
 from datetime import datetime, time, timedelta, timezone
 from typing import Any
 from uuid import uuid4
@@ -30,7 +31,7 @@ from app.models import (
 )
 from app.schemas import GenerationConfig, GenerationCreate, GenerationPreviewRead
 
-GENERATOR_VERSION = "deterministic-1"
+GENERATOR_VERSION = "deterministic-2"
 AGE_BANDS = ("0-17", "18-34", "35-49", "50-64", "65-79", "80+")
 TRANSFER_POLICY = {
     "name": "seeded-eligible-sample-v1",
@@ -38,6 +39,73 @@ TRANSFER_POLICY = {
     "seeded_selection": "one in five eligible admissions",
     "destination": "a distinct operational bed unused by the concurrent cohort",
 }
+SCENARIO_PRESETS: dict[str, dict[str, Any]] = {
+    "normal_operations": {
+        "name": "Normal Operations", "admission_volume_factor": 1.0, "peak_pressure_factor": 1.0,
+        "department_bias": {}, "transfer_selection": "one in five eligible admissions",
+    },
+    "high_patient_inflow": {
+        "name": "High Patient Inflow", "admission_volume_factor": 1.2, "peak_pressure_factor": 1.15,
+        "department_bias": {"emergency": 1.8, "general": 1.35},
+        "transfer_selection": "one in five eligible admissions",
+    },
+    "seasonal_disease_surge": {
+        "name": "Seasonal Disease Surge", "admission_volume_factor": 1.15, "peak_pressure_factor": 1.1,
+        "department_bias": {"emergency": 1.5, "general": 1.4, "respiratory": 1.8, "pediatric": 1.35},
+        "transfer_selection": "one in five eligible admissions",
+    },
+    "emergency_surge": {
+        "name": "Emergency Surge", "admission_volume_factor": 1.25, "peak_pressure_factor": 1.25,
+        "department_bias": {"emergency": 2.5},
+        "arrival_profile": "front-loaded high-volume cohort followed by lower-volume cohorts",
+        "transfer_selection": "one in two eligible admissions",
+    },
+    "low_occupancy": {
+        "name": "Low Occupancy", "admission_volume_factor": 0.7, "peak_pressure_factor": 0.65,
+        "department_bias": {}, "transfer_selection": "one in five eligible admissions",
+    },
+}
+
+
+def _scenario_admission_count(config: GenerationConfig) -> int:
+    if not config.target_admissions:
+        return 0
+    factor = SCENARIO_PRESETS[config.scenario]["admission_volume_factor"]
+    return min(5000, math.ceil(config.target_admissions * factor))
+
+
+def _scenario_peak(config: GenerationConfig, total_beds: int) -> int:
+    admission_count = _scenario_admission_count(config)
+    if not admission_count:
+        return 0
+    preset = SCENARIO_PRESETS[config.scenario]
+    baseline = math.ceil(total_beds * config.target_occupancy_pct / 100)
+    adjusted = math.ceil(baseline * preset["peak_pressure_factor"])
+    return min(total_beds, admission_count, adjusted)
+
+
+def _scenario_bed_order(beds: list[Bed], departments: list[Department], config: GenerationConfig, rng: random.Random) -> list[Bed]:
+    preset = SCENARIO_PRESETS[config.scenario]
+    if not preset["department_bias"]:
+        result = beds.copy()
+        rng.shuffle(result)
+        return result
+    names = {department.id: department.name.casefold() for department in departments}
+    biases = preset["department_bias"]
+    # Order departments by their explicit scenario priority, randomizing beds
+    # within each group while keeping every operational bed unique.
+    grouped: dict[float, list[Bed]] = {}
+    for bed in beds:
+        weight = max(
+            [factor for keyword, factor in biases.items() if keyword in names.get(bed.department_id, "")]
+            or [1.0]
+        )
+        grouped.setdefault(weight, []).append(bed)
+    result = []
+    for weight in sorted(grouped, reverse=True):
+        rng.shuffle(grouped[weight])
+        result.extend(grouped[weight])
+    return result
 
 
 def _requested_config(config: GenerationConfig) -> dict[str, Any]:
@@ -99,11 +167,7 @@ def preview_generation(db: Session, hospital_id: int, config: GenerationConfig) 
         raise HTTPException(status_code=409, detail="Generation requires at least one operational bed in the selected departments.")
     days = (config.end_date - config.start_date).days + 1
     total_beds = len(beds)
-    peak = min(
-        total_beds,
-        config.target_admissions,
-        math.ceil(total_beds * config.target_occupancy_pct / 100),
-    ) if config.target_admissions else 0
+    peak = _scenario_peak(config, total_beds)
     counts = {department.id: 0 for department in departments}
     for bed in beds:
         counts[bed.department_id] += 1
@@ -114,7 +178,9 @@ def preview_generation(db: Session, hospital_id: int, config: GenerationConfig) 
         start_date=config.start_date,
         end_date=config.end_date,
         target_admissions=config.target_admissions,
+        projected_admissions=_scenario_admission_count(config),
         target_occupancy_pct=config.target_occupancy_pct,
+        scenario=config.scenario,
         seed=config.seed,
         departments=[
             {"department_id": department.id, "department_name": department.name, "operational_beds": counts[department.id]}
@@ -155,16 +221,38 @@ def _write_generation_data(db: Session, run: GenerationRun, config: GenerationCo
     beds_by_id = {bed.id: bed for bed in beds}
 
     total_beds = len(beds)
-    peak = min(total_beds, config.target_admissions, math.ceil(total_beds * config.target_occupancy_pct / 100)) if config.target_admissions else 0
-    cohort_size = max(1, peak) if config.target_admissions else 0
-    cohort_count = math.ceil(config.target_admissions / cohort_size) if cohort_size else 0
+    peak = _scenario_peak(config, total_beds)
+    admission_count = _scenario_admission_count(config)
+    if config.scenario == "emergency_surge" and admission_count:
+        baseline_peak = max(1, min(total_beds, config.target_admissions, math.ceil(total_beds * config.target_occupancy_pct / 100)))
+        cohort_count = max(1, math.ceil(admission_count / baseline_peak))
+        first_cohort_size = min(peak, admission_count)
+        remaining = admission_count - first_cohort_size
+        later_count = cohort_count - 1
+        if later_count:
+            base_size, extra = divmod(remaining, later_count)
+            cohort_sizes = [first_cohort_size, *(base_size + (1 if index < extra else 0) for index in range(later_count))]
+            cohort_sizes = [size for size in cohort_sizes if size > 0]
+        else:
+            cohort_sizes = [first_cohort_size]
+    else:
+        cohort_size = max(1, peak) if admission_count else 0
+        cohort_count = math.ceil(admission_count / cohort_size) if cohort_size else 0
+        cohort_sizes = [cohort_size] * cohort_count
+        if cohort_sizes and sum(cohort_sizes) > admission_count:
+            cohort_sizes[-1] -= sum(cohort_sizes) - admission_count
+    cohort_offsets = []
+    next_offset = 0
+    for size in cohort_sizes:
+        cohort_offsets.append(next_offset)
+        next_offset += size
+    cohort_count = len(cohort_sizes)
     cohort_duration = horizon / cohort_count if cohort_count else timedelta(0)
-    bed_order = beds.copy()
-    rng.shuffle(bed_order)
+    bed_order = _scenario_bed_order(beds, departments, config, rng)
     age_bands = AGE_BANDS
 
     patients: list[SyntheticPatient] = []
-    for index in range(1, config.target_admissions + 1):
+    for index in range(1, admission_count + 1):
         patients.append(SyntheticPatient(
             run_id=run.run_id,
             workspace_id=run.workspace_id,
@@ -179,14 +267,19 @@ def _write_generation_data(db: Session, run: GenerationRun, config: GenerationCo
     admissions: list[Admission] = []
     episode_rows: list[dict[str, Any]] = []
     for index, patient in enumerate(patients):
-        cohort_index, position = divmod(index, cohort_size)
+        cohort_index = bisect_right(cohort_offsets, index) - 1
+        position = index - cohort_offsets[cohort_index]
         admitted_at = start_at + cohort_duration * cohort_index
         discharged_at = start_at + cohort_duration * (cohort_index + 1)
+        if config.scenario == "seasonal_disease_surge" and patient.age_band not in {"65-79", "80+"}:
+            # The proposed seasonal preset selects older fictional age bands for
+            # relatively longer stays; no diagnosis or clinical meaning is generated.
+            discharged_at = admitted_at + cohort_duration * 0.75
         if cohort_index == cohort_count - 1:
             discharged_at = last_valid_time
         if discharged_at <= admitted_at:
             discharged_at = min(last_valid_time, admitted_at + timedelta(seconds=1))
-        selected_bed = bed_order[(cohort_index * cohort_size + position) % total_beds]
+        selected_bed = bed_order[(cohort_offsets[cohort_index] + position) % total_beds]
         admission = Admission(
             run_id=run.run_id,
             workspace_id=run.workspace_id,
@@ -211,14 +304,18 @@ def _write_generation_data(db: Session, run: GenerationRun, config: GenerationCo
         initial_bed: Bed = episode["bed"]
         admitted_at: datetime = episode["start"]
         discharged_at: datetime = episode["end"]
-        active_cohort_start = (index // cohort_size) * cohort_size
-        cohort_index = index // cohort_size
-        active_cohort_end = min(active_cohort_start + cohort_size, len(episode_rows))
+        cohort_index = bisect_right(cohort_offsets, index) - 1
+        active_cohort_start = cohort_offsets[cohort_index]
+        active_cohort_end = active_cohort_start + cohort_sizes[cohort_index]
         occupied_bed_ids = {episode_rows[position]["bed"].id for position in range(active_cohort_start, active_cohort_end)}
         reserved_destination_ids = transfer_destinations_by_cohort.setdefault(cohort_index, set())
         spare_beds = [bed for bed in bed_order if bed.id not in occupied_bed_ids and bed.id not in reserved_destination_ids]
+        if config.scenario == "emergency_surge":
+            cross_department = [bed for bed in spare_beds if bed.department_id != initial_bed.department_id]
+            spare_beds = cross_department
         transfer_bed = None
-        if spare_beds and discharged_at - admitted_at >= timedelta(hours=4) and rng.randrange(5) == 0:
+        transfer_denominator = 2 if config.scenario == "emergency_surge" else 5
+        if spare_beds and discharged_at - admitted_at >= timedelta(hours=4) and rng.randrange(transfer_denominator) == 0:
             transfer_bed = spare_beds.pop(0)
             reserved_destination_ids.add(transfer_bed.id)
 
@@ -328,10 +425,15 @@ def generate_dataset(db: Session, hospital_id: int, payload: GenerationCreate) -
 
         effective_config = {
             "request": requested,
+            "scenario_name": SCENARIO_PRESETS[config.scenario]["name"],
+            "scenario_policy": SCENARIO_PRESETS[config.scenario],
             "resolved_department_ids": [department.id for department in departments],
             "generator_version": GENERATOR_VERSION,
             "age_band_policy": list(AGE_BANDS),
-            "transfer_policy": TRANSFER_POLICY,
+            "transfer_policy": {
+                **TRANSFER_POLICY,
+                "seeded_selection": SCENARIO_PRESETS[config.scenario]["transfer_selection"],
+            },
             "occupancy_snapshot_cadence": "daily at 12:00 UTC",
             "assignment_interval_policy": "half-open [start_at, end_at)",
             "occupancy_formula": "occupied_operational_beds / operational_beds * 100",

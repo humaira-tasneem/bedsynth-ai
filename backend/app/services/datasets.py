@@ -144,6 +144,7 @@ def _list_item(run: GenerationRun, hospital_name: str, counts: DatasetRecordCoun
         started_at=run.started_at,
         completed_at=run.completed_at,
         status=run.status,
+        scenario_name=config.get("scenario_name", "Normal Operations"),
         seed=run.seed,
         configured_start_date=_parse_config_date(request.get("start_date")),
         configured_end_date=_parse_config_date(request.get("end_date")),

@@ -175,7 +175,7 @@ def test_manifest_contains_persisted_configuration_counts_versions_and_validatio
     assert manifest["record_counts"]["admissions"] == 4
     assert manifest["record_counts"]["bed_assignments"] > 0
     assert manifest["validation_reports"][0]["validation_id"] == validation["validation_id"]
-    assert manifest["versions"]["generator"] == "deterministic-1"
+    assert manifest["versions"]["generator"] == "deterministic-2"
     assert manifest["versions"]["schema"] is None
     assert manifest["reproducibility"]["reproducible"] is False
     assert "schema version" in manifest["reproducibility"]["reason"]

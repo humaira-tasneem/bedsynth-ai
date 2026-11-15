@@ -257,6 +257,13 @@ class GenerationConfig(BaseModel):
     target_admissions: int = Field(ge=0, le=5000)
     target_occupancy_pct: int = Field(ge=0, le=100)
     seed: int = Field(ge=0, le=2_147_483_647)
+    scenario: Literal[
+        "normal_operations",
+        "high_patient_inflow",
+        "seasonal_disease_surge",
+        "emergency_surge",
+        "low_occupancy",
+    ] = "normal_operations"
     department_ids: list[int] | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
@@ -287,7 +294,15 @@ class GenerationPreviewRead(BaseModel):
     start_date: date
     end_date: date
     target_admissions: int
+    projected_admissions: int
     target_occupancy_pct: int
+    scenario: Literal[
+        "normal_operations",
+        "high_patient_inflow",
+        "seasonal_disease_surge",
+        "emergency_surge",
+        "low_occupancy",
+    ]
     seed: int
     departments: list[GenerationPreviewDepartment]
     total_operational_beds: int
@@ -503,6 +518,7 @@ class DatasetListItem(BaseModel):
     started_at: datetime
     completed_at: datetime | None
     status: Literal["generating", "completed", "failed"]
+    scenario_name: str
     seed: int
     configured_start_date: date | None
     configured_end_date: date | None
