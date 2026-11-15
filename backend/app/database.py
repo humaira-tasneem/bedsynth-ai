@@ -27,7 +27,7 @@ class Base(DeclarativeBase):
 
 
 def initialize_database() -> None:
-    """Create current tables and safely add columns from the first foundation schema."""
+    """Create current tables and safely add columns introduced after the foundation schema."""
     if engine.dialect.name == "sqlite":
         existing = set(inspect(engine).get_table_names())
         legacy_columns = {
@@ -45,6 +45,10 @@ def initialize_database() -> None:
             "departments": {
                 "bed_capacity": "INTEGER",
                 "is_archived": "BOOLEAN NOT NULL DEFAULT 0",
+            },
+            "synthetic_patients": {
+                "age_years": "INTEGER CHECK (age_years IS NULL OR age_years BETWEEN 0 AND 120)",
+                "gender": "VARCHAR(16) CHECK (gender IS NULL OR gender IN ('male', 'female', 'other'))",
             },
         }
         with engine.begin() as connection:

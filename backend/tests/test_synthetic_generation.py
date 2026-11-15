@@ -23,6 +23,7 @@ from app.models import (
     utc_now,
 )
 from app.routes import get_db
+from app.schemas import GenerationConfig
 
 
 @pytest.fixture
@@ -169,7 +170,7 @@ def test_generation_is_reproducible_and_idempotent(generation_client: TestClient
     assert second["run_id"] != first["run_id"]
     with generation_client.test_sessions() as db:
         def comparable(run_id: str) -> dict:
-            patients = list(db.execute(select(SyntheticPatient.synthetic_patient_id, SyntheticPatient.age_band).where(SyntheticPatient.run_id == run_id).order_by(SyntheticPatient.synthetic_patient_id)))
+            patients = list(db.execute(select(SyntheticPatient.synthetic_patient_id, SyntheticPatient.age_band, SyntheticPatient.age_years, SyntheticPatient.gender).where(SyntheticPatient.run_id == run_id).order_by(SyntheticPatient.synthetic_patient_id)))
             admissions = list(db.execute(select(Admission.patient_id, Admission.department_id, Admission.initial_bed_id, Admission.admitted_at).where(Admission.run_id == run_id).order_by(Admission.patient_id)))
             transfers = list(db.execute(select(BedTransfer.admission_id, BedTransfer.source_bed_id, BedTransfer.destination_bed_id, BedTransfer.transferred_at).where(BedTransfer.run_id == run_id).order_by(BedTransfer.admission_id)))
             snapshots = list(db.execute(select(OccupancySnapshot.department_id, OccupancySnapshot.snapshot_at, OccupancySnapshot.occupied_beds).where(OccupancySnapshot.run_id == run_id).order_by(OccupancySnapshot.department_id, OccupancySnapshot.snapshot_at)))
@@ -283,6 +284,83 @@ def test_generation_history_is_workspace_scoped(generation_client: TestClient) -
     assert history.json()[0]["hospital_id"] == hospital_id
 
 
+def test_default_patient_profile_is_used_when_configuration_omits_it(generation_client: TestClient) -> None:
+    _, hospital_id, departments = make_hospital(generation_client, department_count=1, beds_per_department=8)
+    config = generation_config(departments, admissions=8, seed=56)
+    parsed = GenerationConfig.model_validate(config)
+    assert parsed.patient_profile.age_distribution.model_dump() == {
+        "children_0_17": 20, "young_adults_18_35": 20, "middle_aged_adults_36_59": 20,
+        "older_adults_60_79": 20, "elderly_80_plus": 20,
+    }
+    assert parsed.patient_profile.gender_distribution.model_dump() == {"male": 34, "female": 33, "other": 33}
+    preview = generation_client.post(f"/api/v1/hospitals/{hospital_id}/generation-runs/preview", json=config)
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["patient_profile"] == parsed.patient_profile.model_dump()
+    run = preview_and_generate(generation_client, hospital_id, config)
+    with generation_client.test_sessions() as db:
+        records = list(db.scalars(select(SyntheticPatient).where(SyntheticPatient.run_id == run["run_id"])).all())
+        assert len(records) == 8
+        assert all(record.age_years is not None and record.gender is not None for record in records)
+        assert run["config"]["request"]["patient_profile"] == parsed.patient_profile.model_dump(mode="json")
+
+
+def test_custom_age_and_gender_distributions_generate_near_exact_records(generation_client: TestClient) -> None:
+    _, hospital_id, departments = make_hospital(generation_client, department_count=1, beds_per_department=20)
+    config = generation_config(departments, admissions=100, seed=81)
+    profile = {
+        "minimum_age": 5,
+        "maximum_age": 95,
+        "age_distribution": {
+            "children_0_17": 10, "young_adults_18_35": 20, "middle_aged_adults_36_59": 30,
+            "older_adults_60_79": 25, "elderly_80_plus": 15,
+        },
+        "gender_distribution": {"male": 50, "female": 40, "other": 10},
+    }
+    config.update(patient_profile=profile, start_date="2025-01-01", end_date="2025-02-01")
+    preview_response = generation_client.post(f"/api/v1/hospitals/{hospital_id}/generation-runs/preview", json=config)
+    assert preview_response.status_code == 200, preview_response.text
+    preview = preview_response.json()
+    assert preview["patient_profile"] == profile
+    mismatched_config = {**config, "patient_profile": {**profile, "gender_distribution": {"male": 49, "female": 41, "other": 10}}}
+    mismatch_response = generation_client.post(f"/api/v1/hospitals/{hospital_id}/generation-runs", json={
+        **mismatched_config, "idempotency_key": str(uuid4()), "preview_token": preview["preview_token"],
+    })
+    assert mismatch_response.status_code == 409
+    key = str(uuid4())
+    run = generation_client.post(f"/api/v1/hospitals/{hospital_id}/generation-runs", json={
+        **config, "idempotency_key": key, "preview_token": preview["preview_token"],
+    }).json()
+    assert run["status"] == "completed", run.get("error_message")
+    with generation_client.test_sessions() as db:
+        patients = list(db.scalars(select(SyntheticPatient).where(SyntheticPatient.run_id == run["run_id"])).all())
+        group_counts = {
+            "children_0_17": sum(0 <= row.age_years <= 17 for row in patients),
+            "young_adults_18_35": sum(18 <= row.age_years <= 35 for row in patients),
+            "middle_aged_adults_36_59": sum(36 <= row.age_years <= 59 for row in patients),
+            "older_adults_60_79": sum(60 <= row.age_years <= 79 for row in patients),
+            "elderly_80_plus": sum(80 <= row.age_years <= 120 for row in patients),
+        }
+        assert group_counts == {"children_0_17": 10, "young_adults_18_35": 20, "middle_aged_adults_36_59": 30, "older_adults_60_79": 25, "elderly_80_plus": 15}
+        assert {row.gender for row in patients} == {"male", "female", "other"}
+        assert {gender: sum(row.gender == gender for row in patients) for gender in ("male", "female", "other")} == {"male": 50, "female": 40, "other": 10}
+        assert all(5 <= row.age_years <= 95 for row in patients)
+
+
+@pytest.mark.parametrize("profile", [
+    {"age_distribution": {"children_0_17": 10}},
+    {"gender_distribution": {"male": -1, "female": 101, "other": 0}},
+    {"minimum_age": 70, "maximum_age": 69},
+    {"minimum_age": -1},
+    {"maximum_age": 121},
+    {"minimum_age": 20, "age_distribution": {"children_0_17": 20, "young_adults_18_35": 20, "middle_aged_adults_36_59": 20, "older_adults_60_79": 20, "elderly_80_plus": 20}},
+])
+def test_invalid_patient_profile_is_rejected(generation_client: TestClient, profile: dict) -> None:
+    _, hospital_id, departments = make_hospital(generation_client, department_count=1, beds_per_department=2)
+    config = {**generation_config(departments), "patient_profile": profile}
+    response = generation_client.post(f"/api/v1/hospitals/{hospital_id}/generation-runs/preview", json=config)
+    assert response.status_code == 422
+
+
 @pytest.mark.parametrize(("scenario", "projected_admissions"), [
     ("normal_operations", 24), ("high_patient_inflow", 29), ("seasonal_disease_surge", 28),
     ("emergency_surge", 30), ("low_occupancy", 17),
@@ -291,22 +369,33 @@ def test_scenario_presets_preview_and_persist_metadata(generation_client: TestCl
     workspace_id, hospital_id, departments = make_hospital(generation_client, department_count=2, beds_per_department=8)
     config = generation_config(departments, admissions=24, seed=31)
     config["scenario"] = scenario
+    selected_profile = {
+        "minimum_age": 60,
+        "maximum_age": 79,
+        "age_distribution": {"children_0_17": 0, "young_adults_18_35": 0, "middle_aged_adults_36_59": 0, "older_adults_60_79": 100, "elderly_80_plus": 0},
+        "gender_distribution": {"male": 0, "female": 100, "other": 0},
+    }
+    config["patient_profile"] = selected_profile
     preview = generation_client.post(f"/api/v1/hospitals/{hospital_id}/generation-runs/preview", json=config)
     assert preview.status_code == 200, preview.text
     assert preview.json()["scenario"] == scenario
     assert preview.json()["projected_admissions"] == projected_admissions
+    assert preview.json()["patient_profile"] == selected_profile
     run = preview_and_generate(generation_client, hospital_id, config)
     assert run["status"] == "completed", run.get("error_message")
     assert run["config"]["request"]["scenario"] == scenario
     assert run["config"]["scenario_name"]
     assert run["admissions_count"] == projected_admissions
+    assert run["config"]["request"]["patient_profile"] == selected_profile
     library = generation_client.get(f"/api/v1/workspaces/{workspace_id}/datasets").json()
     assert library["items"][0]["scenario_name"] == run["config"]["scenario_name"]
 
     with generation_client.test_sessions() as db:
         snapshots = list(db.scalars(select(OccupancySnapshot).where(OccupancySnapshot.run_id == run["run_id"])).all())
+        patients = list(db.scalars(select(SyntheticPatient).where(SyntheticPatient.run_id == run["run_id"])).all())
         assert snapshots
         assert all(row.occupied_beds <= row.operational_beds for row in snapshots)
+        assert patients and all(60 <= row.age_years <= 79 and row.gender == "female" for row in patients)
 
 
 def test_scenario_occupancy_pressure_changes_planned_peak_and_volume(generation_client: TestClient) -> None:

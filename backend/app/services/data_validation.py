@@ -72,6 +72,19 @@ def evaluate_run(db: Session, run_id: str) -> dict:
     check("completeness", "run_counts", len(patients) == run.patients_count and len(admissions) == run.admissions_count
           and len(discharges) == run.discharges_count and len(transfers) == run.transfers_count
           and len(snapshots) == run.snapshots_count, "Persisted record counts do not match the generation run metadata.", severity="medium", entity_type="generation_run", entity_id=run_id)
+    requested_profile = ((run.config or {}).get("request") or {}).get("patient_profile")
+    profile_fields_valid = True
+    if requested_profile:
+        minimum_age = requested_profile.get("minimum_age", 0)
+        maximum_age = requested_profile.get("maximum_age", 120)
+        profile_fields_valid = all(
+            patient.age_years is not None
+            and minimum_age <= patient.age_years <= maximum_age
+            and patient.gender in {"male", "female", "other"}
+            for patient in patients
+        )
+    check("completeness", "patient_profile_fields", profile_fields_valid,
+          "Generated patient ages or gender values do not match the configured fictional patient profile.", severity="high", entity_type="synthetic_patient")
 
     # Uniqueness: database constraints are defense in depth; these checks also
     # detect legacy/corrupted imports that predate those constraints.

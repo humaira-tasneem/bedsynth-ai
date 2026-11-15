@@ -11,11 +11,14 @@ type Bed = { status: string };
 type Department = { id: number; name: string; code: string; is_archived: boolean; beds: Bed[] };
 type Hospital = { id: number; workspace_id: number; name: string; code: string; is_archived: boolean; departments: Department[] };
 type ScenarioId = "normal_operations" | "high_patient_inflow" | "seasonal_disease_surge" | "emergency_surge" | "low_occupancy";
-type FormConfig = { start_date: string; end_date: string; target_admissions: number; target_occupancy_pct: number; seed: number; scenario: ScenarioId };
+type AgeDistribution = { children_0_17: number; young_adults_18_35: number; middle_aged_adults_36_59: number; older_adults_60_79: number; elderly_80_plus: number };
+type GenderDistribution = { male: number; female: number; other: number };
+type PatientProfile = { minimum_age: number; maximum_age: number; age_distribution: AgeDistribution; gender_distribution: GenderDistribution };
+type FormConfig = { start_date: string; end_date: string; target_admissions: number; target_occupancy_pct: number; seed: number; scenario: ScenarioId; patient_profile: PatientProfile };
 type AssistantHandoff = { workspace_id: number; hospital_id: number; start_date: string; end_date: string; target_admissions: number; target_occupancy_pct: number; seed: number; department_ids: number[] | null };
 type Preview = {
   hospital_id: number; hospital_name: string; workspace_id: number; start_date: string; end_date: string;
-  target_admissions: number; projected_admissions: number; target_occupancy_pct: number; scenario: ScenarioId; seed: number;
+  target_admissions: number; projected_admissions: number; target_occupancy_pct: number; scenario: ScenarioId; patient_profile: PatientProfile; seed: number;
   departments: { department_id: number; department_name: string; operational_beds: number }[];
   total_operational_beds: number; planned_peak_occupied_beds: number; occupancy_snapshots_planned: number; preview_token: string;
 };
@@ -32,6 +35,31 @@ const scenarios = [
   { id: "emergency_surge", name: "Emergency Surge", description: "Higher admission volume and emergency demand, with more modeled transfers.", Icon: Siren },
   { id: "low_occupancy", name: "Low Occupancy", description: "Lower admission volume and reduced concurrent bed demand.", Icon: Sun },
 ] as const;
+
+const DEFAULT_PATIENT_PROFILE: PatientProfile = {
+  minimum_age: 0,
+  maximum_age: 120,
+  age_distribution: { children_0_17: 20, young_adults_18_35: 20, middle_aged_adults_36_59: 20, older_adults_60_79: 20, elderly_80_plus: 20 },
+  gender_distribution: { male: 34, female: 33, other: 33 },
+};
+const AGE_PROFILE_FIELDS: { key: keyof AgeDistribution; label: string }[] = [
+  { key: "children_0_17", label: "Children · 0–17" },
+  { key: "young_adults_18_35", label: "Young adults · 18–35" },
+  { key: "middle_aged_adults_36_59", label: "Middle-aged adults · 36–59" },
+  { key: "older_adults_60_79", label: "Older adults · 60–79" },
+  { key: "elderly_80_plus", label: "Elderly · 80+" },
+];
+const GENDER_PROFILE_FIELDS: { key: keyof GenderDistribution; label: string }[] = [
+  { key: "male", label: "Male" }, { key: "female", label: "Female" }, { key: "other", label: "Other" },
+];
+
+function copyDefaultPatientProfile(): PatientProfile {
+  return {
+    ...DEFAULT_PATIENT_PROFILE,
+    age_distribution: { ...DEFAULT_PATIENT_PROFILE.age_distribution },
+    gender_distribution: { ...DEFAULT_PATIENT_PROFILE.gender_distribution },
+  };
+}
 
 async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`${apiBase}${path}`, {
@@ -63,7 +91,7 @@ export default function SyntheticDataGeneratorPage() {
   const [hospitals, setHospitals] = useState<Hospital[]>([]);
   const [hospitalId, setHospitalId] = useState<number | null>(null);
   const [selectedDepartmentIds, setSelectedDepartmentIds] = useState<number[]>([]);
-  const [form, setForm] = useState<FormConfig>({ start_date: "", end_date: "", target_admissions: 50, target_occupancy_pct: 70, seed: 42, scenario: "normal_operations" });
+  const [form, setForm] = useState<FormConfig>({ start_date: "", end_date: "", target_admissions: 50, target_occupancy_pct: 70, seed: 42, scenario: "normal_operations", patient_profile: copyDefaultPatientProfile() });
   const [preview, setPreview] = useState<Preview | null>(null);
   const [idempotencyKey, setIdempotencyKey] = useState("");
   const [history, setHistory] = useState<Run[]>([]);
@@ -96,6 +124,21 @@ export default function SyntheticDataGeneratorPage() {
   const activeDepartments = useMemo(() => selectedHospital?.departments.filter((department) => !department.is_archived) ?? [], [selectedHospital]);
   const allDepartmentIds = useMemo(() => activeDepartments.map((department) => department.id), [activeDepartments]);
   const effectiveDepartmentIds = selectedDepartmentIds.length ? selectedDepartmentIds : allDepartmentIds;
+  const ageTotal = Object.values(form.patient_profile.age_distribution).reduce((total, value) => total + value, 0);
+  const genderTotal = Object.values(form.patient_profile.gender_distribution).reduce((total, value) => total + value, 0);
+  const profilePercentages = [...Object.values(form.patient_profile.age_distribution), ...Object.values(form.patient_profile.gender_distribution)];
+  const percentagesValid = profilePercentages.every((value) => Number.isInteger(value) && value >= 0 && value <= 100);
+  const ageLimitsValid = Number.isInteger(form.patient_profile.minimum_age) && Number.isInteger(form.patient_profile.maximum_age)
+    && form.patient_profile.minimum_age >= 0 && form.patient_profile.maximum_age <= 120
+    && form.patient_profile.minimum_age <= form.patient_profile.maximum_age;
+  const selectedAgeGroupUnavailable = AGE_PROFILE_FIELDS.some(({ key }) => {
+    const ranges: Record<keyof AgeDistribution, [number, number]> = {
+      children_0_17: [0, 17], young_adults_18_35: [18, 35], middle_aged_adults_36_59: [36, 59], older_adults_60_79: [60, 79], elderly_80_plus: [80, 120],
+    };
+    const [groupMin, groupMax] = ranges[key];
+    return form.patient_profile.age_distribution[key] > 0 && (groupMax < form.patient_profile.minimum_age || groupMin > form.patient_profile.maximum_age);
+  });
+  const patientProfileValid = percentagesValid && ageTotal === 100 && genderTotal === 100 && ageLimitsValid && !selectedAgeGroupUnavailable;
 
   async function loadHospitals(id: number, assistantHandoff?: AssistantHandoff) {
     setLoadingHospitals(true);
@@ -109,7 +152,7 @@ export default function SyntheticDataGeneratorPage() {
       setHospitalId(handoffHospital?.id ?? entries[0]?.id ?? null);
       if (assistantHandoff) {
         if (handoffHospital) {
-          setForm({ start_date: assistantHandoff.start_date, end_date: assistantHandoff.end_date, target_admissions: assistantHandoff.target_admissions, target_occupancy_pct: assistantHandoff.target_occupancy_pct, seed: assistantHandoff.seed, scenario: "normal_operations" });
+          setForm({ start_date: assistantHandoff.start_date, end_date: assistantHandoff.end_date, target_admissions: assistantHandoff.target_admissions, target_occupancy_pct: assistantHandoff.target_occupancy_pct, seed: assistantHandoff.seed, scenario: "normal_operations", patient_profile: copyDefaultPatientProfile() });
           setSelectedDepartmentIds(assistantHandoff.department_ids ?? []);
           setSuccess("Assistant configuration loaded. Review it and request a generation preview before confirmation.");
         } else {
@@ -179,6 +222,14 @@ export default function SyntheticDataGeneratorPage() {
     setPreview(null); setIdempotencyKey(""); setError(""); setSuccess("");
   }
 
+  function updatePatientProfile(profile: PatientProfile) {
+    updateForm("patient_profile", profile);
+  }
+
+  function resetPatientProfile() {
+    updatePatientProfile(copyDefaultPatientProfile());
+  }
+
   function toggleDepartment(id: number) {
     const current = selectedDepartmentIds.length ? selectedDepartmentIds : allDepartmentIds;
     const next = current.includes(id) ? current.filter((entry) => entry !== id) : [...current, id];
@@ -194,6 +245,7 @@ export default function SyntheticDataGeneratorPage() {
   async function makePreview(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!selectedHospital) { setError("Choose an active hospital before previewing a generation."); return; }
+    if (!patientProfileValid) { setError("Correct the patient profile ranges and percentages before previewing."); return; }
     if (form.target_admissions > 0 && form.target_occupancy_pct === 0) { setError("Target occupancy must be above 0 when generating admissions."); return; }
     if (form.target_admissions === 0 && form.target_occupancy_pct !== 0) { setError("Set target occupancy to 0 when generating 0 admissions."); return; }
     const startMs = Date.parse(`${form.start_date}T00:00:00Z`);
@@ -230,6 +282,7 @@ export default function SyntheticDataGeneratorPage() {
           target_occupancy_pct: Number(form.target_occupancy_pct),
           seed: Number(form.seed),
           scenario: form.scenario,
+          patient_profile: form.patient_profile,
           department_ids: selectedDepartmentIds.length ? selectedDepartmentIds : null,
           idempotency_key: idempotencyKey,
           preview_token: preview.preview_token,
@@ -277,6 +330,23 @@ export default function SyntheticDataGeneratorPage() {
                 <div className="generator-two-column"><label>Base admissions<input type="number" min={0} max={5000} required disabled={generating} value={form.target_admissions} onChange={(event) => updateForm("target_admissions", Number(event.target.value))} /><small>The selected scenario adjusts this volume; preview shows the projected count (maximum 5,000).</small></label><label>Random seed<input type="number" min={0} max={2147483647} required disabled={generating} value={form.seed} onChange={(event) => updateForm("seed", Number(event.target.value))} /><small>Reuse the same seed and configuration to reproduce records.</small></label></div>
                 <label className="generator-occupancy-label">Target occupancy <strong>{form.target_occupancy_pct}%</strong><input type="range" min={0} max={100} step={1} disabled={generating} value={form.target_occupancy_pct} onChange={(event) => updateForm("target_occupancy_pct", Number(event.target.value))} aria-label="Target occupancy percentage" /><small>A scheduling target for peak concurrent bed assignments; snapshots report calculated occupancy.</small></label>
                 <fieldset className="generator-fieldset scenario-fieldset"><legend>Operational scenario</legend><p className="scenario-help">Presets adjust the fictional demand pattern and volume. They are simulation assumptions, not real hospital statistics. Select one before previewing.</p><div className="scenario-grid" role="radiogroup" aria-label="Operational scenario">{scenarios.map(({ id, name, description, Icon }) => <label key={id} className={`scenario-option ${form.scenario === id ? "is-selected" : ""}`}><input type="radio" name="scenario" value={id} checked={form.scenario === id} disabled={generating} onChange={() => updateForm("scenario", id)} /><span className="scenario-option-icon"><Icon size={17} /></span><span className="scenario-option-copy"><strong>{name}</strong><small>{description}</small></span><span className="scenario-radio-mark" aria-hidden="true" /></label>)}</div></fieldset>
+                <details className="patient-profile-details" open>
+                  <summary><span className="patient-profile-summary-copy"><strong>Patient Profile Configuration</strong><small>Configure fictional ages and gender shares for the generated patients.</small></span></summary>
+                  <div className="patient-profile-body">
+                    <div className="patient-profile-body-header"><p>Demographic settings affect fictional records only. Percentage allocations are rounded deterministically for the projected patient count.</p><button type="button" className="generator-button generator-button-secondary patient-profile-reset" disabled={generating} onClick={resetPatientProfile}>Reset to Defaults</button></div>
+                    <div className="patient-profile-age-limits">
+                      <label>Minimum age<input type="number" min={0} max={120} step={1} value={form.patient_profile.minimum_age} disabled={generating} aria-invalid={!ageLimitsValid} onChange={(event) => updatePatientProfile({ ...form.patient_profile, minimum_age: Number(event.target.value) })} /></label>
+                      <label>Maximum age<input type="number" min={0} max={120} step={1} value={form.patient_profile.maximum_age} disabled={generating} aria-invalid={!ageLimitsValid} onChange={(event) => updatePatientProfile({ ...form.patient_profile, maximum_age: Number(event.target.value) })} /></label>
+                      <small>Generated ages stay within these inclusive limits.</small>
+                    </div>
+                    <div className="patient-profile-distributions">
+                      <fieldset className="patient-profile-group"><legend>Age distribution</legend><p>Use whole-number percentages. These defaults are a neutral synthetic mix, not population estimates.</p><div className="patient-profile-input-grid">{AGE_PROFILE_FIELDS.map((field) => <label key={field.key}>{field.label}<span><input type="number" min={0} max={100} step={1} value={form.patient_profile.age_distribution[field.key]} disabled={generating} aria-invalid={ageTotal !== 100} aria-describedby="age-distribution-total" onChange={(event) => updatePatientProfile({ ...form.patient_profile, age_distribution: { ...form.patient_profile.age_distribution, [field.key]: Number(event.target.value) } })} /><span>%</span></span></label>)}</div><output id="age-distribution-total" className={`patient-profile-total ${ageTotal === 100 ? "is-valid" : "is-invalid"}`} aria-live="polite">Age total: {ageTotal}% {ageTotal === 100 ? "✓" : "· must equal 100%"}</output></fieldset>
+                      <fieldset className="patient-profile-group"><legend>Gender distribution</legend><p>Gender shares use the same deterministic percentage allocation.</p><div className="patient-profile-input-grid patient-gender-input-grid">{GENDER_PROFILE_FIELDS.map((field) => <label key={field.key}>{field.label}<span><input type="number" min={0} max={100} step={1} value={form.patient_profile.gender_distribution[field.key]} disabled={generating} aria-invalid={genderTotal !== 100} aria-describedby="gender-distribution-total" onChange={(event) => updatePatientProfile({ ...form.patient_profile, gender_distribution: { ...form.patient_profile.gender_distribution, [field.key]: Number(event.target.value) } })} /><span>%</span></span></label>)}</div><output id="gender-distribution-total" className={`patient-profile-total ${genderTotal === 100 ? "is-valid" : "is-invalid"}`} aria-live="polite">Gender total: {genderTotal}% {genderTotal === 100 ? "✓" : "· must equal 100%"}</output></fieldset>
+                    </div>
+                    {!ageLimitsValid && <p className="patient-profile-error" role="alert">Enter whole-number ages from 0 to 120, with maximum age on or above minimum age.</p>}
+                    {selectedAgeGroupUnavailable && <p className="patient-profile-error" role="alert">An age group with a non-zero share does not overlap the configured age limits.</p>}
+                  </div>
+                </details>
                 {hasDepartments && <fieldset className="generator-fieldset"><legend>Departments <span>(all active departments by default)</span></legend><div className="generator-department-list">{activeDepartments.map((department) => {
                   const operationalBeds = department.beds.filter((bed) => bed.status === "operational").length;
                   const checked = selectedDepartmentIds.length === 0 || selectedDepartmentIds.includes(department.id);
@@ -292,6 +362,7 @@ export default function SyntheticDataGeneratorPage() {
                 <div className="generator-card-header"><span className="generator-section-icon"><BedDouble size={18} /></span><div><h2 id="preview-heading">Generation preview</h2><p>Server-calculated scope and bed availability.</p></div></div>
                 {!preview ? <div className="generator-summary-empty"><FlaskConical size={24} /><p>Configure a run and preview it to see the selected hospital, bed inventory, and expected record counts.</p></div> : <>
                   <div className="generator-summary-facts"><div><span>Hospital</span><strong>{preview.hospital_name}</strong></div><div><span>Operational scenario</span><strong>{scenarios.find((scenario) => scenario.id === preview.scenario)?.name ?? "Normal Operations"}</strong></div><div><span>Period</span><strong>{preview.start_date} – {preview.end_date}</strong></div><div><span>Base admissions</span><strong>{preview.target_admissions.toLocaleString()}</strong></div><div><span>Projected admissions</span><strong>{preview.projected_admissions.toLocaleString()}</strong></div><div><span>Target occupancy</span><strong>{preview.target_occupancy_pct}%</strong></div><div><span>Random seed</span><strong className="generator-mono">{preview.seed}</strong></div></div>
+                  <section className="patient-profile-preview" aria-label="Preview patient profile"><h3>Patient profile</h3><p>Projected patients: {preview.projected_admissions.toLocaleString()} · Age limits: {preview.patient_profile.minimum_age}–{preview.patient_profile.maximum_age} years</p><strong>Age distribution</strong><div className="patient-preview-chips">{AGE_PROFILE_FIELDS.map((field) => <span key={field.key}>{field.label}: {preview.patient_profile.age_distribution[field.key]}%</span>)}</div><strong>Gender distribution</strong><div className="patient-preview-chips">{GENDER_PROFILE_FIELDS.map((field) => <span key={field.key}>{field.label}: {preview.patient_profile.gender_distribution[field.key]}%</span>)}</div></section>
                   <div className="generator-dept-summary"><h3>Included departments</h3>{preview.departments.map((department) => <div key={department.department_id}><span>{department.department_name}</span><strong>{department.operational_beds} beds</strong></div>)}</div>
                   <div className="generator-planned-stats"><div><strong>{preview.total_operational_beds}</strong><span>Operational beds</span></div><div><strong>{preview.planned_peak_occupied_beds}</strong><span>Planned peak occupied</span></div><div><strong>{preview.occupancy_snapshots_planned}</strong><span>Daily snapshots</span></div></div>
                   <p className="generator-summary-note">Actual occupancy is derived from generated assignment intervals. The requested target is a scheduling input, not a measured result.</p>

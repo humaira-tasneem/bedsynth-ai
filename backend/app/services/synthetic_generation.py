@@ -29,10 +29,17 @@ from app.models import (
     SyntheticPatient,
     utc_now,
 )
-from app.schemas import GenerationConfig, GenerationCreate, GenerationPreviewRead
+from app.schemas import GenerationConfig, GenerationCreate, GenerationPreviewRead, PatientProfileConfig
 
-GENERATOR_VERSION = "deterministic-2"
+GENERATOR_VERSION = "deterministic-3"
 AGE_BANDS = ("0-17", "18-34", "35-49", "50-64", "65-79", "80+")
+PROFILE_AGE_GROUPS = (
+    ("children_0_17", 0, 17),
+    ("young_adults_18_35", 18, 35),
+    ("middle_aged_adults_36_59", 36, 59),
+    ("older_adults_60_79", 60, 79),
+    ("elderly_80_plus", 80, 120),
+)
 TRANSFER_POLICY = {
     "name": "seeded-eligible-sample-v1",
     "minimum_stay_hours": 4,
@@ -108,6 +115,53 @@ def _scenario_bed_order(beds: list[Bed], departments: list[Department], config: 
     return result
 
 
+def _allocate_category_counts(count: int, percentages: list[int]) -> list[int]:
+    """Allocate whole records by largest remainder, preserving requested shares as closely as possible."""
+    exact = [count * percentage / 100 for percentage in percentages]
+    allocated = [math.floor(value) for value in exact]
+    remainder = count - sum(allocated)
+    priority = sorted(range(len(percentages)), key=lambda index: (exact[index] - allocated[index], -index), reverse=True)
+    for index in priority[:remainder]:
+        allocated[index] += 1
+    return allocated
+
+
+def _legacy_age_band(age_years: int) -> str:
+    if age_years < 18:
+        return "0-17"
+    if age_years < 35:
+        return "18-34"
+    if age_years < 50:
+        return "35-49"
+    if age_years < 65:
+        return "50-64"
+    if age_years < 80:
+        return "65-79"
+    return "80+"
+
+
+def _generate_patient_demographics(count: int, profile: PatientProfileConfig, seed: int) -> list[tuple[int, str]]:
+    """Build a deterministic, near-exact demographic mix without changing scenario demand settings."""
+    rng = random.Random(f"bedsynth-patient-profile-v1:{seed}")
+    age_distribution = profile.age_distribution.model_dump()
+    age_percentages = [age_distribution[name] for name, _, _ in PROFILE_AGE_GROUPS]
+    age_counts = _allocate_category_counts(count, age_percentages)
+    ages: list[int] = []
+    for (_, group_min, group_max), group_count in zip(PROFILE_AGE_GROUPS, age_counts, strict=True):
+        lower = max(group_min, profile.minimum_age)
+        upper = min(group_max, profile.maximum_age)
+        ages.extend(rng.randint(lower, upper) for _ in range(group_count))
+    rng.shuffle(ages)
+
+    gender_distribution = profile.gender_distribution.model_dump()
+    gender_names = list(gender_distribution)
+    gender_percentages = [gender_distribution[name] for name in gender_names]
+    gender_counts = _allocate_category_counts(count, gender_percentages)
+    genders = [name for name, amount in zip(gender_names, gender_counts, strict=True) for _ in range(amount)]
+    rng.shuffle(genders)
+    return list(zip(ages, genders, strict=True))
+
+
 def _requested_config(config: GenerationConfig) -> dict[str, Any]:
     result = config.model_dump(mode="json")
     if result["department_ids"] is not None:
@@ -181,6 +235,7 @@ def preview_generation(db: Session, hospital_id: int, config: GenerationConfig) 
         projected_admissions=_scenario_admission_count(config),
         target_occupancy_pct=config.target_occupancy_pct,
         scenario=config.scenario,
+        patient_profile=config.patient_profile,
         seed=config.seed,
         departments=[
             {"department_id": department.id, "department_name": department.name, "operational_beds": counts[department.id]}
@@ -249,16 +304,24 @@ def _write_generation_data(db: Session, run: GenerationRun, config: GenerationCo
     cohort_count = len(cohort_sizes)
     cohort_duration = horizon / cohort_count if cohort_count else timedelta(0)
     bed_order = _scenario_bed_order(beds, departments, config, rng)
-    age_bands = AGE_BANDS
+    # Preserve the operational RNG sequence used by generator v2: it consumed
+    # one seeded draw per patient's legacy age band before assigning transfers.
+    # Demographics use a separate versioned stream so profile changes don't
+    # alter admissions, transfers, or occupancy for the same operational seed.
+    for _ in range(admission_count):
+        rng.choice(AGE_BANDS)
+    demographics = _generate_patient_demographics(admission_count, config.patient_profile, config.seed)
 
     patients: list[SyntheticPatient] = []
-    for index in range(1, admission_count + 1):
+    for index, (age_years, gender) in enumerate(demographics, start=1):
         patients.append(SyntheticPatient(
             run_id=run.run_id,
             workspace_id=run.workspace_id,
             hospital_id=run.hospital_id,
             synthetic_patient_id=f"SYN-{config.seed:010d}-{index:06d}",
-            age_band=rng.choice(age_bands),
+            age_band=_legacy_age_band(age_years),
+            age_years=age_years,
+            gender=gender,
             created_at=run.started_at,
         ))
     db.add_all(patients)
@@ -271,7 +334,7 @@ def _write_generation_data(db: Session, run: GenerationRun, config: GenerationCo
         position = index - cohort_offsets[cohort_index]
         admitted_at = start_at + cohort_duration * cohort_index
         discharged_at = start_at + cohort_duration * (cohort_index + 1)
-        if config.scenario == "seasonal_disease_surge" and patient.age_band not in {"65-79", "80+"}:
+        if config.scenario == "seasonal_disease_surge" and (patient.age_years or 0) < 65:
             # The proposed seasonal preset selects older fictional age bands for
             # relatively longer stays; no diagnosis or clinical meaning is generated.
             discharged_at = admitted_at + cohort_duration * 0.75

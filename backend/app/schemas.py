@@ -251,6 +251,55 @@ class BedGenerationRead(BaseModel):
     departments: list[BedGenerationDepartmentResult]
 
 
+class AgeDistributionConfig(BaseModel):
+    children_0_17: int = Field(default=20, ge=0, le=100)
+    young_adults_18_35: int = Field(default=20, ge=0, le=100)
+    middle_aged_adults_36_59: int = Field(default=20, ge=0, le=100)
+    older_adults_60_79: int = Field(default=20, ge=0, le=100)
+    elderly_80_plus: int = Field(default=20, ge=0, le=100)
+
+    @model_validator(mode="after")
+    def validate_total(self) -> "AgeDistributionConfig":
+        if sum(self.model_dump().values()) != 100:
+            raise ValueError("Age distribution percentages must total exactly 100%.")
+        return self
+
+
+class GenderDistributionConfig(BaseModel):
+    male: int = Field(default=34, ge=0, le=100)
+    female: int = Field(default=33, ge=0, le=100)
+    other: int = Field(default=33, ge=0, le=100)
+
+    @model_validator(mode="after")
+    def validate_total(self) -> "GenderDistributionConfig":
+        if sum(self.model_dump().values()) != 100:
+            raise ValueError("Gender distribution percentages must total exactly 100%.")
+        return self
+
+
+class PatientProfileConfig(BaseModel):
+    minimum_age: int = Field(default=0, ge=0, le=120)
+    maximum_age: int = Field(default=120, ge=0, le=120)
+    age_distribution: AgeDistributionConfig = Field(default_factory=AgeDistributionConfig)
+    gender_distribution: GenderDistributionConfig = Field(default_factory=GenderDistributionConfig)
+
+    @model_validator(mode="after")
+    def validate_age_range_and_distribution(self) -> "PatientProfileConfig":
+        if self.maximum_age < self.minimum_age:
+            raise ValueError("Maximum patient age must be on or above the minimum patient age.")
+        groups = (
+            ("children_0_17", 0, 17),
+            ("young_adults_18_35", 18, 35),
+            ("middle_aged_adults_36_59", 36, 59),
+            ("older_adults_60_79", 60, 79),
+            ("elderly_80_plus", 80, 120),
+        )
+        for field_name, group_min, group_max in groups:
+            if getattr(self.age_distribution, field_name) and (group_max < self.minimum_age or group_min > self.maximum_age):
+                raise ValueError(f"Age group {field_name} has a non-zero share but does not overlap the configured age limits.")
+        return self
+
+
 class GenerationConfig(BaseModel):
     start_date: date
     end_date: date
@@ -264,6 +313,7 @@ class GenerationConfig(BaseModel):
         "emergency_surge",
         "low_occupancy",
     ] = "normal_operations"
+    patient_profile: PatientProfileConfig = Field(default_factory=PatientProfileConfig)
     department_ids: list[int] | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
@@ -303,6 +353,7 @@ class GenerationPreviewRead(BaseModel):
         "emergency_surge",
         "low_occupancy",
     ]
+    patient_profile: PatientProfileConfig
     seed: int
     departments: list[GenerationPreviewDepartment]
     total_operational_beds: int

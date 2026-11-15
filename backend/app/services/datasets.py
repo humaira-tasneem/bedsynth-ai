@@ -23,8 +23,8 @@ from app.schemas import (
 ENTITY_DEFINITIONS = {
     "patients": {
         "model": SyntheticPatient,
-        "fields": ["id", "run_id", "workspace_id", "hospital_id", "synthetic_patient_id", "age_band", "created_at"],
-        "labels": ["Record ID", "Generation Run ID", "Workspace ID", "Hospital ID", "Synthetic Patient ID", "Age Band", "Created At (UTC)"],
+        "fields": ["id", "run_id", "workspace_id", "hospital_id", "synthetic_patient_id", "age_band", "age_years", "gender", "created_at"],
+        "labels": ["Record ID", "Generation Run ID", "Workspace ID", "Hospital ID", "Synthetic Patient ID", "Legacy Age Band", "Age (years)", "Gender", "Created At (UTC)"],
         "search": ["synthetic_patient_id", "age_band"],
         "order": [SyntheticPatient.id],
     },

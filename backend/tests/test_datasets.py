@@ -142,7 +142,7 @@ def test_csv_exports_have_stable_headers_values_and_proper_escaping(dataset_clie
     assert response.headers["content-type"].startswith("text/csv")
     assert 'filename="patients.csv"' in response.headers["content-disposition"]
     rows = list(csv.reader(io.StringIO(response.content.decode("utf-8"))))
-    assert rows[0] == ["id", "run_id", "workspace_id", "hospital_id", "synthetic_patient_id", "age_band", "created_at"]
+    assert rows[0] == ["id", "run_id", "workspace_id", "hospital_id", "synthetic_patient_id", "age_band", "age_years", "gender", "created_at"]
     assert rows[1][4] == 'SYN,"quoted"\nline'
 
     _, _, _, empty_run = create_dataset(dataset_client, admissions=0, seed=45)
@@ -175,7 +175,7 @@ def test_manifest_contains_persisted_configuration_counts_versions_and_validatio
     assert manifest["record_counts"]["admissions"] == 4
     assert manifest["record_counts"]["bed_assignments"] > 0
     assert manifest["validation_reports"][0]["validation_id"] == validation["validation_id"]
-    assert manifest["versions"]["generator"] == "deterministic-2"
+    assert manifest["versions"]["generator"] == "deterministic-3"
     assert manifest["versions"]["schema"] is None
     assert manifest["reproducibility"]["reproducible"] is False
     assert "schema version" in manifest["reproducibility"]["reason"]

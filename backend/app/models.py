@@ -121,6 +121,8 @@ class SyntheticPatient(Base):
     __table_args__ = (
         UniqueConstraint("run_id", "synthetic_patient_id", name="uq_synthetic_patient_run_identifier"),
         CheckConstraint("age_band IN ('0-17', '18-34', '35-49', '50-64', '65-79', '80+')", name="ck_synthetic_patient_age_band"),
+        CheckConstraint("age_years IS NULL OR age_years BETWEEN 0 AND 120", name="ck_synthetic_patient_age_years"),
+        CheckConstraint("gender IS NULL OR gender IN ('male', 'female', 'other')", name="ck_synthetic_patient_gender"),
         Index("ix_synthetic_patient_hospital", "hospital_id"),
     )
 
@@ -130,6 +132,8 @@ class SyntheticPatient(Base):
     hospital_id: Mapped[int] = mapped_column(ForeignKey("hospitals.id", ondelete="RESTRICT"), nullable=False, index=True)
     synthetic_patient_id: Mapped[str] = mapped_column(String(64), nullable=False)
     age_band: Mapped[str] = mapped_column(String(20), nullable=False)
+    age_years: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    gender: Mapped[str | None] = mapped_column(String(16), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
     run: Mapped[GenerationRun] = relationship(back_populates="patients")
     admissions: Mapped[list["Admission"]] = relationship(back_populates="patient")
