@@ -541,3 +541,77 @@ class DatasetPreviewRead(BaseModel):
     page: int
     page_size: int
     pages: int
+
+
+class AssistantHistoryMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=1600)
+
+
+class AssistantChatRequest(BaseModel):
+    workspace_id: int = Field(gt=0)
+    message: str = Field(min_length=1, max_length=2000)
+    history: list[AssistantHistoryMessage] = Field(default_factory=list, max_length=12)
+
+    @field_validator("message")
+    @classmethod
+    def trim_chat_message(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Message cannot be blank.")
+        return value
+
+
+class GeminiGenerationProposal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    assistant_message: str = Field(min_length=1, max_length=800)
+    hospital_name: str | None = Field(default=None, max_length=160)
+    start_date: str | None = Field(default=None, max_length=40)
+    end_date: str | None = Field(default=None, max_length=40)
+    target_admissions: int | None = None
+    target_occupancy_pct: int | None = None
+    seed: int | None = None
+    department_names: list[str] | None = Field(default=None, max_length=50)
+
+
+class AssistantConfigFields(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    start_date: date
+    end_date: date
+    target_admissions: int = Field(ge=0, le=5000)
+    target_occupancy_pct: int = Field(ge=0, le=100)
+    seed: int = Field(ge=0, le=2_147_483_647)
+    department_ids: list[int] | None = Field(default=None, min_length=1)
+
+
+class AssistantConfigValidationRequest(BaseModel):
+    workspace_id: int = Field(gt=0)
+    hospital_id: int = Field(gt=0)
+    configuration: AssistantConfigFields
+
+
+class AssistantGenerationConfig(AssistantConfigFields):
+    workspace_id: int
+    hospital_id: int
+    hospital_name: str
+    department_names: list[str] | None
+
+
+class AssistantFieldError(BaseModel):
+    field: str
+    message: str
+
+
+class AssistantChatResponse(BaseModel):
+    status: Literal["needs_clarification", "ready", "invalid"]
+    assistant_message: str
+    questions: list[str] = Field(default_factory=list)
+    field_errors: list[AssistantFieldError] = Field(default_factory=list)
+    hospital_choices: list[str] = Field(default_factory=list)
+    configuration: AssistantGenerationConfig | None = None
+    seed_assigned_by_application: bool = False
+
+
+class AssistantConfigValidationResponse(BaseModel):
+    valid: Literal[True] = True
+    configuration: AssistantGenerationConfig

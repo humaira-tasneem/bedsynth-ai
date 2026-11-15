@@ -1,6 +1,6 @@
 # BedSynth AI frontend
 
-Next.js App Router frontend using TypeScript, Tailwind CSS, Lucide icons, and Recharts. Hospital Studio at `/hospitals` provides backend-connected workspace, network, hospital, department, and bed configuration. The Synthetic Data Generator at `/generate` provides single-hospital deterministic generation and persisted run history. Statistical utility evaluation, privacy-risk scoring, analytics, and export are not implemented in this milestone.
+Next.js App Router frontend using TypeScript, Tailwind CSS, Lucide icons, and Recharts. Hospital Studio at `/hospitals` provides backend-connected workspace, network, hospital, department, and bed configuration. The Synthetic Data Generator at `/generate` provides single-hospital deterministic generation and persisted run history. Analytics, data validation, the Dataset Manager, and the Gemini-backed generation assistant are available at `/analytics`, `/validation`, `/datasets`, and `/assistant`. Statistical utility and privacy-risk evaluations are not part of the current implementation.
 
 ## Setup
 
@@ -27,3 +27,5 @@ For a production build: `npm run build`, then `npm run start`. Development artif
 | Variable | Default | Purpose |
 |---|---|---|
 | `NEXT_PUBLIC_API_BASE_URL` | `http://localhost:8000` | Browser-visible API base URL. This must not contain credentials or secrets. |
+
+The assistant's Gemini API key is configured only in `backend/.env` as `GEMINI_API_KEY`. Never add it to this frontend environment or any `NEXT_PUBLIC_*` variable. Assistant conversations are transient in page memory; an approved configuration is handed to `/generate` through browser session storage. Generation still requires a preview and separate confirmation.

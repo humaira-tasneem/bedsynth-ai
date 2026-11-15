@@ -8,11 +8,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import text
 
+from app.environment import load_backend_environment
+
+load_backend_environment()
+
 from app.database import engine, initialize_database
 from app import models  # noqa: F401 - registers tables with Base.metadata
 from app.routes import router as hospital_studio_router
 from app.analytics_routes import router as analytics_router
 from app.datasets_routes import router as datasets_router
+from app.assistant_routes import router as assistant_router
 
 
 class HealthResponse(BaseModel):
@@ -46,6 +51,7 @@ app.add_middleware(
 app.include_router(hospital_studio_router)
 app.include_router(analytics_router)
 app.include_router(datasets_router)
+app.include_router(assistant_router)
 
 
 @app.get("/health", response_model=HealthResponse, tags=["system"])

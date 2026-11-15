@@ -16,12 +16,13 @@ import {
   Network,
   Settings2,
   ShieldCheck,
+  Sparkles,
   Sun,
   X,
 } from "lucide-react";
 
 type HealthState = "checking" | "online" | "offline";
-type SectionId = "overview" | "network" | "hospitals" | "generate" | "analytics" | "validation" | "datasets" | "settings";
+type SectionId = "overview" | "network" | "hospitals" | "generate" | "assistant" | "analytics" | "validation" | "datasets" | "settings";
 type WorkspaceSummary = { hospitals: number; departments: number; beds: number };
 
 const navigation: { id: SectionId; label: string; icon: typeof LayoutDashboard }[] = [
@@ -29,6 +30,7 @@ const navigation: { id: SectionId; label: string; icon: typeof LayoutDashboard }
   { id: "network", label: "Hospital network", icon: Network },
   { id: "hospitals", label: "Hospital Studio", icon: Building2 },
   { id: "generate", label: "Generate dataset", icon: FlaskConical },
+  { id: "assistant", label: "AI Assistant", icon: Sparkles },
   { id: "analytics", label: "Analytics", icon: BarChart3 },
   { id: "validation", label: "Data validation", icon: ShieldCheck },
   { id: "datasets", label: "Datasets", icon: Database },
@@ -113,13 +115,14 @@ export default function HomePage() {
     setMobileOpen(false);
     if (id === "hospitals") router.push("/hospitals");
     else if (id === "generate") router.push("/generate");
+    else if (id === "assistant") router.push("/assistant");
     else if (id === "analytics") router.push("/analytics");
     else if (id === "validation") router.push("/validation");
     else if (id === "datasets") router.push("/datasets");
     else if (pathname !== "/") router.push("/");
   }
 
-  const currentSection = pathname === "/hospitals" ? "hospitals" : pathname === "/generate" ? "generate" : pathname === "/analytics" ? "analytics" : pathname === "/validation" ? "validation" : pathname.startsWith("/datasets") ? "datasets" : active;
+  const currentSection = pathname === "/hospitals" ? "hospitals" : pathname === "/generate" ? "generate" : pathname === "/assistant" ? "assistant" : pathname === "/analytics" ? "analytics" : pathname === "/validation" ? "validation" : pathname.startsWith("/datasets") ? "datasets" : active;
   const selectedLabel = navigation.find((item) => item.id === currentSection)?.label ?? "Settings";
 
   return (

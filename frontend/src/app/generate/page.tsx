@@ -11,6 +11,7 @@ type Bed = { status: string };
 type Department = { id: number; name: string; code: string; is_archived: boolean; beds: Bed[] };
 type Hospital = { id: number; workspace_id: number; name: string; code: string; is_archived: boolean; departments: Department[] };
 type FormConfig = { start_date: string; end_date: string; target_admissions: number; target_occupancy_pct: number; seed: number };
+type AssistantHandoff = { workspace_id: number; hospital_id: number; start_date: string; end_date: string; target_admissions: number; target_occupancy_pct: number; seed: number; department_ids: number[] | null };
 type Preview = {
   hospital_id: number; hospital_name: string; workspace_id: number; start_date: string; end_date: string;
   target_admissions: number; target_occupancy_pct: number; seed: number;
@@ -87,13 +88,26 @@ export default function SyntheticDataGeneratorPage() {
   const allDepartmentIds = useMemo(() => activeDepartments.map((department) => department.id), [activeDepartments]);
   const effectiveDepartmentIds = selectedDepartmentIds.length ? selectedDepartmentIds : allDepartmentIds;
 
-  async function loadHospitals(id: number) {
+  async function loadHospitals(id: number, assistantHandoff?: AssistantHandoff) {
     setLoadingHospitals(true);
     setHospitals([]); setHospitalId(null); setSelectedDepartmentIds([]); setPreview(null); setHistory([]);
     try {
       const entries = await api<Hospital[]>(`/api/v1/workspaces/${id}/hospitals`);
       setHospitals(entries);
-      setHospitalId(entries[0]?.id ?? null);
+      const handoffHospital = assistantHandoff && assistantHandoff.workspace_id === id
+        ? entries.find((hospital) => hospital.id === assistantHandoff.hospital_id)
+        : undefined;
+      setHospitalId(handoffHospital?.id ?? entries[0]?.id ?? null);
+      if (assistantHandoff) {
+        if (handoffHospital) {
+          setForm({ start_date: assistantHandoff.start_date, end_date: assistantHandoff.end_date, target_admissions: assistantHandoff.target_admissions, target_occupancy_pct: assistantHandoff.target_occupancy_pct, seed: assistantHandoff.seed });
+          setSelectedDepartmentIds(assistantHandoff.department_ids ?? []);
+          setSuccess("Assistant configuration loaded. Review it and request a generation preview before confirmation.");
+        } else {
+          setError("The approved assistant hospital is no longer active in this workspace. Choose an active hospital and review the configuration.");
+        }
+        window.sessionStorage.removeItem("bedsynth-approved-assistant-config");
+      }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not load hospitals.");
     } finally { setLoadingHospitals(false); }
@@ -114,8 +128,18 @@ export default function SyntheticDataGeneratorPage() {
         setApiOnline(health.status === "ok");
         setWorkspaces(workspaceEntries);
         if (workspaceEntries.length) {
-          setWorkspaceId(workspaceEntries[0].id);
-          await loadHospitals(workspaceEntries[0].id);
+          let handoff: AssistantHandoff | undefined;
+          try {
+            const saved = window.sessionStorage.getItem("bedsynth-approved-assistant-config");
+            if (saved) handoff = JSON.parse(saved) as AssistantHandoff;
+          } catch {
+            window.sessionStorage.removeItem("bedsynth-approved-assistant-config");
+          }
+          const targetWorkspaceId = handoff && workspaceEntries.some((workspace) => workspace.id === handoff?.workspace_id)
+            ? handoff.workspace_id
+            : workspaceEntries[0].id;
+          setWorkspaceId(targetWorkspaceId);
+          await loadHospitals(targetWorkspaceId, handoff);
         }
       } catch (cause) {
         if (!mounted) return;
@@ -220,7 +244,7 @@ export default function SyntheticDataGeneratorPage() {
     <main className="generator-page" id="main-content">
       <header className="generator-topbar">
         <Link href="/" className="generator-brand"><span className="generator-brand-mark"><Activity size={19} /></span><span>BedSynth <strong>AI</strong></span></Link>
-        <nav aria-label="Workspace navigation"><Link href="/" className="generator-nav-link"><ArrowLeft size={15} /> Overview</Link><Link href="/hospitals" className="generator-nav-link">Hospital Studio <ArrowUpRight size={14} /></Link><Link href="/validation" className="generator-nav-link">Data validation <ArrowUpRight size={14} /></Link></nav>
+        <nav aria-label="Workspace navigation"><Link href="/" className="generator-nav-link"><ArrowLeft size={15} /> Overview</Link><Link href="/assistant" className="generator-nav-link">AI Assistant <ArrowUpRight size={14} /></Link><Link href="/hospitals" className="generator-nav-link">Hospital Studio <ArrowUpRight size={14} /></Link><Link href="/validation" className="generator-nav-link">Data validation <ArrowUpRight size={14} /></Link></nav>
       </header>
 
       <div className="generator-content">

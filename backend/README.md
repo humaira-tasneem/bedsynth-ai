@@ -18,8 +18,10 @@ To install the API test tools as well, use `-m pip install -r requirements-dev.t
 ## Run
 
 ```powershell
-.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --env-file .env --host 127.0.0.1 --port 8000
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
+
+FastAPI loads `backend/.env` from an absolute path derived from the backend package, so environment loading does not depend on Uvicorn's `--env-file` path or the terminal's current directory. Run the command from `backend` so the default relative SQLite URL continues to use `backend/bedsynth.db`.
 
 Health: `http://127.0.0.1:8000/health`  
 Interactive API docs: `http://127.0.0.1:8000/docs`
@@ -47,6 +49,8 @@ All routes use `/api/v1`:
 - `GET /generation-runs/{run_id}/dataset/preview/{entity}`
 - `GET /generation-runs/{run_id}/dataset/export/{entity}`
 - `GET /generation-runs/{run_id}/dataset/manifest`
+- `POST /assistant/chat`
+- `POST /assistant/validate-config`
 - `GET /analytics/hospitals/{hospital_id}/overview`
 - `GET /analytics/hospitals/{hospital_id}/occupancy`
 - `GET /analytics/hospitals/{hospital_id}/patient-flow`
@@ -85,5 +89,11 @@ Analytics are operational summaries of a synthetic run. They are not statistical
 |---|---|---|
 | `DATABASE_URL` | `sqlite:///./bedsynth.db` | SQLAlchemy database URL; relative SQLite paths resolve from the backend working directory. |
 | `FRONTEND_ORIGIN` | `http://localhost:3000` | Exact origin allowed by browser CORS. |
+| `GEMINI_API_KEY` | unset | Backend-only Google Gemini Developer API credential; assistant returns a configuration error when unset. |
+| `GEMINI_MODEL` | `gemini-3.8-flash` | Gemini model identifier used by the assistant. |
 
 This foundation has no authentication yet. Workspace scoping is enforced by route/resource relationships, but access control must be added before exposing it to multiple users or networks.
+
+### Generation assistant
+
+The optional `/assistant/chat` endpoint interprets short, bounded conversation context against active hospital and department names from the requested workspace. Gemini is never shown database IDs; the backend resolves exact names/codes and validates the proposed configuration against the generation schema, hospital ownership, active departments, and available operational beds. Requests that omit required values return clarification questions. The assistant does not persist conversations or operational records and cannot invoke generation. `/assistant/validate-config` revalidates user-edited values independently of Gemini. The frontend hands an approved configuration to the existing generator page, where a user must request its preview and separately confirm record creation. The SDK is Google's official `google-genai` package (3.x line); the configurable default model is `gemini-3.8-flash`. Do not enter patient information: high-signal identifier patterns are rejected before a Gemini request, but this lightweight filter is not a general-purpose PHI detector.
