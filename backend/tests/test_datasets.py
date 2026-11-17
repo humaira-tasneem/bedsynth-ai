@@ -12,7 +12,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.database import Base
 from app.main import app
-from app.models import Admission, BedAssignment, BedTransfer, Discharge, OccupancySnapshot, SyntheticPatient
+from app.models import Admission, BedAssignment, BedTransfer, Discharge, GenerationRun, OccupancySnapshot, SyntheticPatient
 from app.routes import get_db
 from test_synthetic_generation import generation_config, make_hospital, preview_and_generate
 
@@ -111,6 +111,28 @@ def test_dataset_detail_returns_actual_counts_departments_and_validation_history
     assert detail["analytics_summary"]["recorded_days"] == 3
     assert detail["analytics_summary"]["latest_snapshot_date"] is not None
     assert detail["analytics_summary"]["average_occupancy_pct"] is not None
+
+
+def test_dataset_scenario_is_unavailable_when_legacy_run_has_no_scenario_metadata(dataset_client):
+    workspace_id, _, _, run = create_dataset(dataset_client, admissions=1)
+    with dataset_client.test_sessions() as db:
+        stored_run = db.get(GenerationRun, run["run_id"])
+        config = dict(stored_run.config)
+        config.pop("scenario_name", None)
+        request = dict(config["request"])
+        request.pop("scenario", None)
+        request.pop("patient_profile", None)
+        config["request"] = request
+        stored_run.config = config
+        db.commit()
+
+    listing = dataset_client.get(f"/api/v1/workspaces/{workspace_id}/datasets")
+    assert listing.status_code == 200, listing.text
+    assert listing.json()["items"][0]["scenario_name"] is None
+    detail = dataset_client.get(f"/api/v1/generation-runs/{run['run_id']}/dataset")
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["scenario_name"] is None
+    assert "patient_profile" not in detail.json()["generation_config"]["request"]
 
 
 def test_dataset_preview_paginates_and_returns_empty_entity_metadata(dataset_client):

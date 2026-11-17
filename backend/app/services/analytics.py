@@ -29,6 +29,15 @@ def _scenario(run: GenerationRun | None) -> str | None:
     return ((run.config or {}).get("request") or {}).get("scenario") if run else None
 
 
+def scenario_name_for_run(run: GenerationRun | None) -> str | None:
+    """Return persisted scenario name, deriving it only from a stored scenario code."""
+    if run is None:
+        return None
+    config = run.config or {}
+    scenario = ((config.get("request") or {}).get("scenario"))
+    return config.get("scenario_name") or SCENARIO_NAMES.get(scenario)
+
+
 def _run_period(run: GenerationRun | None) -> tuple[date | None, date | None]:
     request = (run.config or {}).get("request", {}) if run else {}
     try:
@@ -99,7 +108,7 @@ def _context(db: Session, hospital_id: int, filters: AnalyticsFilters) -> dict:
         "run_started_at": run.started_at if run else None,
         "seed": run.seed if run else None,
         "scenario": _scenario(run),
-        "scenario_name": (run.config or {}).get("scenario_name") if run else None,
+        "scenario_name": scenario_name_for_run(run),
         "patient_profile": ((run.config or {}).get("request") or {}).get("patient_profile") if run else None,
         "department_id": department.id if department else None,
         "department_name": department.name if department else None,
@@ -482,7 +491,7 @@ def list_analytics_runs(db: Session, hospital_id: int) -> list[dict]:
             "start_date": start,
             "end_date": end,
             "scenario": scenario,
-            "scenario_name": (run.config or {}).get("scenario_name") or SCENARIO_NAMES.get(scenario),
+            "scenario_name": scenario_name_for_run(run),
             "seed": run.seed,
             "patient_profile": request.get("patient_profile"),
             "patients_count": run.patients_count,
@@ -547,7 +556,7 @@ def compare_analytics_runs(db: Session, request: AnalyticsComparisonRequest) -> 
             "start_date": context["start_date"],
             "end_date": context["end_date"],
             "scenario": _scenario(run),
-            "scenario_name": (run.config or {}).get("scenario_name"),
+            "scenario_name": scenario_name_for_run(run),
             "patient_profile": ((run.config or {}).get("request") or {}).get("patient_profile"),
             "seed": run.seed,
             **metrics,

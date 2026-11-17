@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
+import { backendHealthLabel } from "@/lib/assistant-status.mjs";
 import {
   Activity, BarChart3, BedDouble, Building2, ChevronDown, Database,
   FlaskConical, LayoutDashboard, Menu, Moon, PanelLeftClose,
@@ -113,7 +114,7 @@ export default function AppShell({ children }: Readonly<{ children: React.ReactN
           <button type="button" className="product-icon-button product-menu" onClick={() => setMobileOpen(true)} aria-label="Open navigation"><Menu size={20} /></button>
           <div className="product-breadcrumb"><span>Workspace</span><span aria-hidden="true">/</span><strong>{routeLabel(pathname)}</strong></div>
         </div>
-        <div className="product-topbar-actions"><div className={`product-health health-${health}`} role="status" aria-live="polite"><i />{health === "checking" ? "Checking API" : health === "online" ? "API connected" : "API unavailable"}</div><button type="button" className="product-icon-button product-theme" onClick={toggleTheme} aria-label={`Switch to ${dark ? "light" : "dark"} theme`} title={`Switch to ${dark ? "light" : "dark"} theme`}>{dark ? <Sun size={18} /> : <Moon size={18} />}</button></div>
+        <div className="product-topbar-actions"><div className={`product-health health-${health}`} role="status" aria-live="polite"><i />{backendHealthLabel(health)}</div><button type="button" className="product-icon-button product-theme" onClick={toggleTheme} aria-label={`Switch to ${dark ? "light" : "dark"} theme`} title={`Switch to ${dark ? "light" : "dark"} theme`}>{dark ? <Sun size={18} /> : <Moon size={18} />}</button></div>
       </header>
       <div className="product-route-frame">{children}</div>
     </div>

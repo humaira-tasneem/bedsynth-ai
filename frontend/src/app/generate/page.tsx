@@ -312,7 +312,7 @@ export default function SyntheticDataGeneratorPage() {
       </header>
 
       <div className="generator-content">
-        <div className="generator-heading"><div><div className="generator-kicker"><FlaskConical size={14} /> SYNTHETIC OPERATIONS</div><h1>Synthetic Data Generator</h1><p>Build a reproducible, hospital-scoped operations dataset from your configured bed inventory.</p></div><span className={`generator-api-state ${apiOnline === true ? "is-online" : apiOnline === false ? "is-offline" : ""}`} role="status"><span />{apiOnline === true ? "API connected" : apiOnline === false ? "API unavailable" : "Checking API"}</span></div>
+        <div className="generator-heading"><div><div className="generator-kicker"><FlaskConical size={14} /> SYNTHETIC OPERATIONS</div><h1>Synthetic Data Generator</h1><p>Build a reproducible, hospital-scoped operations dataset from your configured bed inventory.</p></div><span className={`generator-api-state ${apiOnline === true ? "is-online" : apiOnline === false ? "is-offline" : ""}`} role="status"><span />{apiOnline === true ? "Backend connected" : apiOnline === false ? "Backend unavailable" : "Checking backend"}</span></div>
 
         {error && <div className="generator-alert generator-alert-error" role="alert"><CircleAlert size={18} /><span>{error}</span></div>}
         {success && <div className="generator-alert generator-alert-success" role="status"><Check size={18} /><span>{success}</span></div>}

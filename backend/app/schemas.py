@@ -684,7 +684,7 @@ class DatasetListItem(BaseModel):
     started_at: datetime
     completed_at: datetime | None
     status: Literal["generating", "completed", "failed"]
-    scenario_name: str
+    scenario_name: str | None
     seed: int
     configured_start_date: date | None
     configured_end_date: date | None
@@ -734,6 +734,7 @@ class AssistantChatRequest(BaseModel):
     workspace_id: int = Field(gt=0)
     message: str = Field(min_length=1, max_length=2000)
     history: list[AssistantHistoryMessage] = Field(default_factory=list, max_length=12)
+    local_fallback_only: bool = False
 
     @field_validator("message")
     @classmethod
@@ -787,11 +788,30 @@ class AssistantFieldError(BaseModel):
 class AssistantChatResponse(BaseModel):
     status: Literal["needs_clarification", "ready", "invalid"]
     assistant_message: str
+    assistant_source: Literal["gemini", "groq", "local", "not_checked"] = "not_checked"
+    gemini_status: Literal[
+        "not_configured", "configured", "ready", "quota", "authentication", "model_not_found",
+        "timeout", "provider_unavailable", "network_error", "malformed_response", "provider_error", "not_used",
+    ] = "not_used"
+    groq_status: Literal[
+        "not_configured", "configured", "ready", "quota", "authentication", "model_not_found",
+        "timeout", "provider_unavailable", "network_error", "malformed_response", "provider_error", "not_used",
+    ] = "not_used"
+    provider_category: Literal[
+        "not_configured", "quota", "authentication", "model_not_found", "timeout",
+        "provider_unavailable", "network_error", "malformed_response", "provider_error", "local_only",
+    ] | None = None
+    retry_after_seconds: int | None = Field(default=None, ge=1, le=86_400)
     questions: list[str] = Field(default_factory=list)
     field_errors: list[AssistantFieldError] = Field(default_factory=list)
     hospital_choices: list[str] = Field(default_factory=list)
     configuration: AssistantGenerationConfig | None = None
     seed_assigned_by_application: bool = False
+
+
+class AssistantServiceStatusRead(BaseModel):
+    gemini_key_configured: bool
+    groq_key_configured: bool
 
 
 class AssistantConfigValidationResponse(BaseModel):

@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import secrets
-from datetime import date
+from datetime import date, datetime, timezone
+from email.utils import parsedate_to_datetime
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from fastapi import HTTPException
 from pydantic import ValidationError
@@ -31,17 +35,30 @@ MAX_WORKSPACE_HOSPITALS = 100
 MAX_HOSPITAL_DEPARTMENTS = 100
 MAX_CONVERSATION_CONTEXT = 8000
 DEFAULT_MODEL = "gemini-3.8-flash"
+DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
+GROQ_CHAT_COMPLETIONS_URL = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_USER_AGENT = "BedSynth-AI/1.0"
+PROVIDER_TIMEOUT_SECONDS = 15
 SENSITIVE_TEXT_PATTERNS = (
     re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE),
     re.compile(r"\b(?:mrn|medical record (?:number|#)|patient (?:name|id|identifier)|date of birth|dob|ssn|social security)\b", re.IGNORECASE),
     re.compile(r"(?<!\d)(?:\+?\d[\s().-]*){10,15}(?!\d)"),
     re.compile(r"\b(?:mr|mrs|ms|miss)\.\s+[A-Z][a-z]+\b"),
+    re.compile(r"\b(?:diagnos(?:is|ed)|symptoms?|treatment|medications?|prescriptions?|allerg(?:y|ies)|lab(?:oratory)? results?|clinical notes?|medical history|vital signs?)\b", re.IGNORECASE),
+    re.compile(r"\b(?:patient|person|individual)\s+(?:has|with|was diagnosed with|is taking|takes|received)\s+[A-Za-z-]+\b", re.IGNORECASE),
+    re.compile(r"\b\d+(?:\.\d+)?\s*(?:mg|mcg|µg|ml|millilit(?:er|re)s?|dosage)\b", re.IGNORECASE),
+    re.compile(r"\b(?:blood pressure|heart rate|oxygen saturation|spo2|body temperature|blood glucose|hemoglobin|creatinine|biopsy|radiology report)\b", re.IGNORECASE),
 )
 
 
 def gemini_key_is_configured() -> bool:
     """Return key presence only; never expose the credential value."""
     return bool(os.getenv("GEMINI_API_KEY", "").strip())
+
+
+def groq_key_is_configured() -> bool:
+    """Return Groq key presence only; never expose the credential value."""
+    return bool(os.getenv("GROQ_API_KEY", "").strip())
 
 
 def _name_key(value: str) -> str:
@@ -149,7 +166,7 @@ def _local_proposal_from_explicit_values(
 
     selected_department_names = None
     all_departments_pattern = re.compile(
-        r"\ball\s+(?:(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+)?departments?\b",
+        r"\b(?:all|every)\s+(?:(?:the|active)\s+)*(?:(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+)?(?:(?:the|active)\s+)*departments?\b",
         re.IGNORECASE,
     )
     for turn in user_messages:
@@ -232,7 +249,10 @@ def _parse_gemini_response(response) -> GeminiGenerationProposal:
             raise ValueError("Gemini returned no structured content.")
         return GeminiGenerationProposal.model_validate_json(text)
     except (ValidationError, ValueError, TypeError) as exc:
-        raise HTTPException(status_code=502, detail="Gemini returned an invalid configuration response. Please rephrase the request and try again.") from exc
+        raise HTTPException(status_code=502, detail={
+            "category": "malformed_response",
+            "message": "Gemini returned an invalid configuration response. Please rephrase the request and try again.",
+        }) from exc
 
 
 def _gemini_proposal_json_schema() -> dict:
@@ -279,27 +299,51 @@ def _is_provider_deadline_error(exc: Exception) -> bool:
     return _provider_error_status_code(exc) == 504 or "deadline_exceeded" in status
 
 
-def _sanitize_provider_message(value: object, sensitive_values: list[str]) -> str:
-    """Bound and redact provider text before it can reach backend logs."""
-    if not isinstance(value, str) or not value.strip():
-        return "No provider message supplied."
-    message = value
-    # Error bodies can echo request data; remove the entire known user-controlled
-    # values before applying credential and identifier redaction.
-    for sensitive in sorted((item for item in sensitive_values if item), key=len, reverse=True):
-        message = message.replace(sensitive, "[redacted request content]")
-    message = re.sub(r"(?i)bearer\s+\S+", "Bearer [redacted]", message)
-    message = re.sub(r"(?i)(api[_ -]?key|authorization)\s*[:=]\s*[^\s,;]+", r"\1=[redacted]", message)
-    message = re.sub(r"(?i)(x-goog-api-key)\s*[:=]\s*[^\s,;]+", r"\1=[redacted]", message)
-    message = re.sub(r"\bAIza[0-9A-Za-z_-]{20,}\b", "[redacted credential]", message)
-    message = re.sub(r"(https?://[^\s?#]+)[^\s]*", r"\1[redacted URL parameters]", message)
-    message = re.sub(r"[\r\n\t]+", " ", message)
-    message = " ".join(message.split())
-    return message[:300] or "No provider message supplied."
+def _provider_retry_after_seconds(exc: Exception) -> int | None:
+    """Extract a bounded retry delay without exposing provider error details."""
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None) or getattr(exc, "headers", None)
+    raw_header = headers.get("retry-after") if headers is not None else None
+    if raw_header is not None:
+        try:
+            return max(1, min(86_400, math.ceil(float(raw_header))))
+        except (TypeError, ValueError, OverflowError):
+            try:
+                retry_at = parsedate_to_datetime(str(raw_header))
+                if retry_at.tzinfo is None:
+                    retry_at = retry_at.replace(tzinfo=timezone.utc)
+                seconds = (retry_at - datetime.now(timezone.utc)).total_seconds()
+                return max(1, min(86_400, math.ceil(seconds)))
+            except (TypeError, ValueError, OverflowError):
+                pass
+
+    details = getattr(exc, "details", None)
+    if isinstance(details, dict):
+        error_body = details.get("error")
+        if isinstance(error_body, dict):
+            details = error_body.get("details", [])
+        else:
+            details = details.get("details", [])
+    if isinstance(details, list):
+        for detail in details:
+            if not isinstance(detail, dict) or not str(detail.get("@type", "")).endswith("RetryInfo"):
+                continue
+            delay = detail.get("retryDelay")
+            if isinstance(delay, str):
+                match = re.fullmatch(r"\s*(\d+(?:\.\d+)?)s\s*", delay)
+                if match:
+                    return max(1, min(86_400, math.ceil(float(match.group(1)))))
+
+    # Some SDK versions surface retry hints only in the provider message.
+    message = str(getattr(exc, "message", "") or "")
+    match = re.search(r"\bretry\s+(?:after|in)\s+(\d+(?:\.\d+)?)\s*(?:seconds?|s)\b", message, re.IGNORECASE)
+    if match:
+        return max(1, min(86_400, math.ceil(float(match.group(1)))))
+    return None
 
 
-def _gemini_error_response(exc: Exception, sensitive_values: list[str]) -> HTTPException:
-    """Map provider errors to safe categories and emit backend-only diagnostics."""
+def _gemini_error_response(exc: Exception) -> HTTPException:
+    """Map provider errors to safe categories without logging provider content."""
     code = _provider_error_status_code(exc)
     provider_status = getattr(exc, "status", None)
     status_text = str(provider_status or "").casefold()
@@ -329,20 +373,20 @@ def _gemini_error_response(exc: Exception, sensitive_values: list[str]) -> HTTPE
         category, http_status = "provider_error", 502
         friendly = "Gemini could not process this request. Try again or use the standard generator."
 
-    safe_message = _sanitize_provider_message(getattr(exc, "message", None) or str(exc), sensitive_values)
-    root_cause = exc.__cause__
-    safe_cause_message = _sanitize_provider_message(str(root_cause), sensitive_values) if root_cause else "none"
+    retry_after = _provider_retry_after_seconds(exc)
     logger.warning(
-        "Gemini request failed: category=%s exception_type=%s http_status=%s provider_status=%s provider_message=%s root_cause_type=%s root_cause_message=%s",
+        "Gemini request failed: category=%s exception_type=%s http_status=%s retry_after_seconds=%s",
         category,
         type(exc).__name__,
         code if code is not None else "unknown",
-        str(provider_status)[:80] if provider_status is not None else "unknown",
-        safe_message,
-        type(root_cause).__name__ if root_cause else "none",
-        safe_cause_message,
+        retry_after if retry_after is not None else "unknown",
     )
-    return HTTPException(status_code=http_status, detail={"category": category, "message": friendly})
+    detail = {"category": category, "message": friendly}
+    headers = None
+    if retry_after is not None:
+        detail["retry_after_seconds"] = retry_after
+        headers = {"Retry-After": str(retry_after)}
+    return HTTPException(status_code=http_status, detail=detail, headers=headers)
 
 
 def interpret_with_gemini(
@@ -354,14 +398,20 @@ def interpret_with_gemini(
     """Call the official Google Gen AI SDK; keep it lazy for keyless test runs."""
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not gemini_key_is_configured():
-        raise HTTPException(status_code=503, detail="The GenAI assistant is not configured. Set GEMINI_API_KEY on the backend to enable it.")
+        raise HTTPException(status_code=503, detail={
+            "category": "not_configured",
+            "message": "The Gemini API key is not configured on the backend.",
+        })
 
     try:
         from google import genai
         from google.genai import types
     except ImportError as exc:
         logger.error("Google Gen AI SDK is not installed.")
-        raise HTTPException(status_code=503, detail="The GenAI assistant is unavailable because its backend SDK is not installed.") from exc
+        raise HTTPException(status_code=503, detail={
+            "category": "provider_error",
+            "message": "The Gemini assistant is unavailable because its backend SDK is not installed.",
+        }) from exc
 
     system_instruction = (
         "You translate the latest user request into a partial BedSynth synthetic operations generation configuration. "
@@ -419,12 +469,150 @@ def interpret_with_gemini(
     except HTTPException:
         raise
     except Exception as exc:  # SDK transport, quota, and service errors vary by version.
-        sensitive_values = [api_key, message, contents, *(item.get("content", "") for item in history)]
-        sensitive_values.extend(str(value) for hospital in hospitals for value in hospital.values())
-        sensitive_values.extend(str(value) for department in departments for value in department.values())
-        raise _gemini_error_response(exc, sensitive_values) from exc
+        raise _gemini_error_response(exc) from exc
 
     return _parse_gemini_response(response)
+
+
+def _groq_proposal_json_schema() -> dict:
+    """Strict Groq JSON Schema: optional application fields are nullable and required."""
+    return {
+        "type": "object",
+        "properties": {
+            "assistant_message": {"type": "string"},
+            "hospital_name": {"type": ["string", "null"]},
+            "start_date": {"type": ["string", "null"]},
+            "end_date": {"type": ["string", "null"]},
+            "target_admissions": {"type": ["integer", "null"]},
+            "target_occupancy_pct": {"type": ["integer", "null"]},
+            "seed": {"type": ["integer", "null"]},
+            "department_names": {
+                "type": ["array", "null"],
+                "items": {"type": "string"},
+            },
+        },
+        "required": [
+            "assistant_message", "hospital_name", "start_date", "end_date",
+            "target_admissions", "target_occupancy_pct", "seed", "department_names",
+        ],
+        "additionalProperties": False,
+    }
+
+
+def _groq_error_response(exc: Exception) -> HTTPException:
+    """Map Groq transport/provider failures without returning raw response content."""
+    code = _provider_error_status_code(exc)
+    if code == 429:
+        category, http_status, friendly = "quota", 429, "Groq quota or rate limit reached. Try again after the indicated wait."
+    elif code in {401, 403}:
+        category, http_status, friendly = "authentication", 502, "Groq authentication failed. Review the backend API key and account access."
+    elif code == 404:
+        category, http_status, friendly = "model_not_found", 502, "The configured Groq model is unavailable. Review GROQ_MODEL on the backend."
+    elif code in {408, 504} or isinstance(exc, TimeoutError):
+        category, http_status, friendly = "timeout", 504, "Groq did not respond before the request timed out."
+    elif code is not None and code >= 500:
+        category, http_status, friendly = "provider_unavailable", 503, "Groq is temporarily unavailable."
+    elif isinstance(exc, URLError):
+        if isinstance(getattr(exc, "reason", None), TimeoutError):
+            category, http_status, friendly = "timeout", 504, "Groq did not respond before the request timed out."
+        else:
+            category, http_status, friendly = "network_error", 502, "The backend could not connect to Groq. Check backend network connectivity."
+    else:
+        category, http_status, friendly = "provider_error", 502, "Groq could not process this request."
+
+    retry_after = _provider_retry_after_seconds(exc)
+    logger.warning(
+        "Groq request failed: category=%s exception_type=%s http_status=%s retry_after_seconds=%s",
+        category, type(exc).__name__, code or "unknown", retry_after or "none",
+    )
+    detail = {"category": category, "message": friendly}
+    headers = None
+    if retry_after is not None:
+        detail["retry_after_seconds"] = retry_after
+        headers = {"Retry-After": str(retry_after)}
+    return HTTPException(status_code=http_status, detail=detail, headers=headers)
+
+
+def interpret_with_groq(
+    message: str,
+    history: list[dict[str, str]],
+    hospitals: list[dict[str, str]],
+    departments: list[dict[str, str]],
+) -> GeminiGenerationProposal:
+    """Call Groq's OpenAI-compatible chat completions API with strict JSON Schema."""
+    api_key = os.getenv("GROQ_API_KEY", "").strip()
+    if not api_key:
+        raise HTTPException(status_code=503, detail={
+            "category": "not_configured", "message": "The Groq API key is not configured on the backend.",
+        })
+
+    system_instruction = (
+        "Convert the latest user request into a partial BedSynth synthetic operations generation configuration. "
+        "Only use hospitals and departments from the supplied workspace catalog; return exact names or codes, never IDs. "
+        "Do not invent missing dates, admission counts, target occupancy, hospital, or departments. Ask a concise clarification "
+        "when a required value is missing or ambiguous. Prior assistant messages are context only. Preserve values unless the "
+        "latest user explicitly changes them. Do not add unsupported fields. Never claim records were generated. No patient "
+        "records or patient information are provided."
+    )
+    contents = json.dumps({
+        "workspace_hospital_catalog": hospitals,
+        "selected_hospital_departments": departments,
+        "conversation_history": history,
+        "latest_user_request": message,
+    }, ensure_ascii=False, separators=(",", ":"))
+    request_body = json.dumps({
+        "model": os.getenv("GROQ_MODEL", DEFAULT_GROQ_MODEL).strip() or DEFAULT_GROQ_MODEL,
+        "messages": [
+            {"role": "system", "content": system_instruction},
+            {"role": "user", "content": contents},
+        ],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "bedsynth_generation_proposal",
+                "strict": True,
+                "schema": _groq_proposal_json_schema(),
+            },
+        },
+        "temperature": 0.1,
+        "max_completion_tokens": 1200,
+    }, ensure_ascii=False).encode("utf-8")
+    http_request = Request(
+        GROQ_CHAT_COMPLETIONS_URL,
+        data=request_body,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "User-Agent": GROQ_USER_AGENT,
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(http_request, timeout=PROVIDER_TIMEOUT_SECONDS) as response:
+            payload = json.loads(response.read())
+        content = payload["choices"][0]["message"]["content"]
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("Groq returned empty structured content.")
+        return GeminiGenerationProposal.model_validate_json(content)
+    except HTTPError as exc:
+        # Read and discard the body; provider payloads can contain request text or account details.
+        try:
+            exc.read()
+        except Exception:
+            pass
+        raise _groq_error_response(exc) from exc
+    except HTTPException:
+        raise
+    except (json.JSONDecodeError, KeyError, IndexError, TypeError, ValidationError, ValueError) as exc:
+        logger.warning("Groq returned malformed structured output: exception_type=%s", type(exc).__name__)
+        raise HTTPException(status_code=502, detail={
+            "category": "malformed_response",
+            "message": "Groq returned an invalid structured configuration. The backend rejected it safely.",
+        }) from exc
+    except (URLError, TimeoutError, OSError) as exc:
+        raise _groq_error_response(exc) from exc
+    except Exception as exc:
+        raise _groq_error_response(exc) from exc
 
 
 def _format_generation_config(payload: AssistantConfigFields, workspace_id: int, hospital: Hospital,
@@ -497,10 +685,36 @@ def _hospital_matches(hospitals: list[Hospital], name_or_code: str) -> list[Hosp
     return [hospital for hospital in hospitals if key in {_name_key(hospital.name), _name_key(hospital.code)}]
 
 
+def _provider_failure_category(exc: HTTPException) -> str | None:
+    detail = exc.detail if isinstance(exc.detail, dict) else {}
+    category = detail.get("category")
+    return category if category in {
+        "not_configured", "quota", "authentication", "model_not_found", "timeout",
+        "provider_unavailable", "network_error", "malformed_response", "provider_error",
+    } else None
+
+
+def _provider_health_from_category(category: str | None) -> str:
+    return "not_configured" if category == "not_configured" else category or "provider_error"
+
+
 def chat_with_assistant(db: Session, request: AssistantChatRequest) -> dict:
-    conversation_text = "\n".join([request.message, *(item.content for item in request.history)])
+    # The assistant appends an application-assigned random seed to ready replies.
+    # It is not user-supplied patient information, so omit only that exact,
+    # backend-generated annotation from the privacy scan. User messages remain
+    # screened in full, regardless of their contents.
+    history_for_privacy_scan = [
+        re.sub(
+            r"\bThe application assigned seed \d+; you can edit it before continuing\.",
+            "",
+            item.content,
+            flags=re.IGNORECASE,
+        ) if item.role == "assistant" else item.content
+        for item in request.history
+    ]
+    conversation_text = "\n".join([request.message, *history_for_privacy_scan])
     if _contains_likely_patient_information(conversation_text):
-        raise HTTPException(status_code=422, detail="Remove patient-identifying details before using the assistant. Only hospital generation requirements belong here.")
+        raise HTTPException(status_code=422, detail="Remove patient-identifying or clinical information before using the assistant. Only fictional hospital operations generation requirements belong here.")
     hospitals = _workspace_hospitals(db, request.workspace_id)
     if not hospitals:
         return {
@@ -509,9 +723,6 @@ def chat_with_assistant(db: Session, request: AssistantChatRequest) -> dict:
             "questions": [], "field_errors": [], "hospital_choices": [], "configuration": None,
             "seed_assigned_by_application": False,
         }
-
-    if not gemini_key_is_configured():
-        raise HTTPException(status_code=503, detail="The GenAI assistant is not configured. Set GEMINI_API_KEY on the backend to enable it.")
 
     history = _bounded_history(request.history, request.message)
     # Departments are scoped only after resolving a hospital candidate from the latest request/history.
@@ -541,17 +752,104 @@ def chat_with_assistant(db: Session, request: AssistantChatRequest) -> dict:
         dept_catalog = [{"name": department.name, "code": department.code} for department in departments]
 
     hospital_catalog = _catalog(hospitals)
-    try:
-        proposal = interpret_with_gemini(request.message, history, hospital_catalog, dept_catalog)
-    except HTTPException as exc:
-        detail = exc.detail if isinstance(exc.detail, dict) else {}
-        category = detail.get("category")
-        if category not in {"timeout", "provider_unavailable", "network_error"}:
-            raise
+    gemini_configured = gemini_key_is_configured()
+    groq_configured = groq_key_is_configured()
+    gemini_status = "configured" if gemini_configured else "not_configured"
+    groq_status = "configured" if groq_configured else "not_configured"
+    provider_metadata = {
+        "assistant_source": "not_checked",
+        "gemini_status": gemini_status,
+        "groq_status": groq_status,
+        "provider_category": None,
+        "retry_after_seconds": None,
+    }
+    fallback_category = "local_only" if request.local_fallback_only else None
+    gemini_failure = "local_only" if request.local_fallback_only else (None if gemini_configured else "not_configured")
+    groq_failure = "local_only" if request.local_fallback_only else (None if groq_configured else "not_configured")
+    retry_delays: list[int] = []
+
+    if not request.local_fallback_only and gemini_configured:
+        try:
+            proposal = interpret_with_gemini(request.message, history, hospital_catalog, dept_catalog)
+            gemini_status = "ready"
+            provider_metadata["assistant_source"] = "gemini"
+        except HTTPException as exc:
+            gemini_failure = _provider_failure_category(exc)
+            if gemini_failure is None:
+                raise
+            gemini_status = _provider_health_from_category(gemini_failure)
+            detail = exc.detail if isinstance(exc.detail, dict) else {}
+            if detail.get("retry_after_seconds"):
+                retry_delays.append(int(detail["retry_after_seconds"]))
+
+    # Exactly one secondary-provider attempt per user request; no automatic retries.
+    if not request.local_fallback_only and provider_metadata["assistant_source"] != "gemini" and groq_configured:
+        try:
+            proposal = interpret_with_groq(request.message, history, hospital_catalog, dept_catalog)
+            groq_status = "ready"
+            provider_metadata["assistant_source"] = "groq"
+        except HTTPException as exc:
+            groq_failure = _provider_failure_category(exc)
+            if groq_failure is None:
+                raise
+            groq_status = _provider_health_from_category(groq_failure)
+            detail = exc.detail if isinstance(exc.detail, dict) else {}
+            if detail.get("retry_after_seconds"):
+                retry_delays.append(int(detail["retry_after_seconds"]))
+
+    if provider_metadata["assistant_source"] != "gemini" and provider_metadata["assistant_source"] != "groq":
+        if not request.local_fallback_only:
+            fallback_category = groq_failure if groq_failure != "not_configured" else gemini_failure
+            fallback_category = fallback_category or "provider_error"
+        provider_metadata = {
+            "assistant_source": "local",
+            "gemini_status": gemini_status,
+            "groq_status": groq_status,
+            "provider_category": fallback_category,
+            "retry_after_seconds": max(retry_delays) if retry_delays else None,
+        }
         user_messages = [item["content"] for item in history if item["role"] == "user"]
         user_messages.append(request.message)
         proposal = _local_proposal_from_explicit_values(user_messages, hospital_catalog, dept_catalog)
-        logger.warning("Gemini unavailable; parsed explicit configuration values locally (category=%s).", category)
+        if fallback_category == "local_only":
+            proposal.assistant_message = (
+                "Local fallback is active. I parsed locally only the details stated explicitly in your messages; "
+                "neither AI provider was called for this request. Review the proposal carefully."
+            )
+        elif gemini_status == "not_configured" and groq_status == "not_configured":
+            proposal.assistant_message = (
+                "Gemini and Groq are not configured. I parsed locally only the details stated explicitly in your messages; "
+                "review the proposal carefully before continuing."
+            )
+        else:
+            failure_names = {
+                "quota": "quota exceeded", "authentication": "authentication failed",
+                "model_not_found": "model unavailable", "timeout": "temporarily unavailable after a timeout",
+                "provider_unavailable": "temporarily unavailable", "network_error": "network error",
+                "malformed_response": "invalid structured response", "provider_error": "provider error",
+            }
+            failures = []
+            if gemini_status not in {"ready", "not_configured"}:
+                failures.append(f"Gemini {failure_names.get(gemini_status, 'unavailable')}")
+            if groq_status not in {"ready", "not_configured"}:
+                failures.append(f"Groq {failure_names.get(groq_status, 'unavailable')}")
+            if not failures and gemini_status == "not_configured":
+                failures.append("Gemini is not configured")
+            if not failures and groq_status == "not_configured":
+                failures.append("Groq is not configured")
+            proposal.assistant_message = (
+                f"{' and '.join(failures) or 'Both AI providers are unavailable'}. I parsed locally only details "
+                "stated explicitly in your messages; no records were generated. Review the proposal carefully."
+            )
+        logger.info("Assistant used local explicit-value parsing (provider_category=%s).", fallback_category)
+    else:
+        provider_metadata.update({
+            "assistant_source": provider_metadata["assistant_source"],
+            "gemini_status": gemini_status,
+            "groq_status": groq_status,
+            "provider_category": gemini_failure if gemini_failure != "not_configured" else None,
+            "retry_after_seconds": max(retry_delays) if retry_delays else None,
+        })
     questions: list[str] = []
     field_errors: list[AssistantFieldError] = []
     hospital: Hospital | None = None
@@ -567,6 +865,7 @@ def chat_with_assistant(db: Session, request: AssistantChatRequest) -> dict:
                 "questions": ["Which hospital code should I use?"], "field_errors": [],
                 "hospital_choices": choices, "configuration": None,
                 "seed_assigned_by_application": False,
+                **provider_metadata,
             }
         else:
             field_errors.append(AssistantFieldError(field="hospital_name", message="I couldn't match that hospital to an active hospital in this workspace."))
@@ -594,16 +893,27 @@ def chat_with_assistant(db: Session, request: AssistantChatRequest) -> dict:
             Department.is_archived.is_(False),
         ).order_by(Department.name, Department.id)).all())
         selected: list[Department] = []
-        for requested_name in proposal.department_names:
-            matches = [department for department in active_departments if _name_key(requested_name) in {_name_key(department.name), _name_key(department.code)}]
-            if len(matches) != 1:
-                field_errors.append(AssistantFieldError(
-                    field="department_names",
-                    message=f"Couldn't uniquely match department '{requested_name}'. Use an active department name or code.",
-                ))
-                continue
-            if matches[0] not in selected:
-                selected.append(matches[0])
+        if not active_departments:
+            field_errors.append(AssistantFieldError(
+                field="department_names",
+                message="This hospital has no active departments. Add or activate departments in Hospital Studio before generating a dataset.",
+            ))
+        elif not proposal.department_names:
+            field_errors.append(AssistantFieldError(
+                field="department_names",
+                message="No requested department matched this hospital's active departments. Provide an active department name or say 'all active departments'.",
+            ))
+        else:
+            for requested_name in proposal.department_names:
+                matches = [department for department in active_departments if _name_key(requested_name) in {_name_key(department.name), _name_key(department.code)}]
+                if len(matches) != 1:
+                    field_errors.append(AssistantFieldError(
+                        field="department_names",
+                        message=f"Couldn't uniquely match department '{requested_name}'. Use an active department name or code.",
+                    ))
+                    continue
+                if matches[0] not in selected:
+                    selected.append(matches[0])
         resolved_department_ids = [department.id for department in selected]
     else:
         resolved_department_ids = None
@@ -614,12 +924,14 @@ def chat_with_assistant(db: Session, request: AssistantChatRequest) -> dict:
             "questions": questions, "field_errors": field_errors,
             "hospital_choices": [], "configuration": None,
             "seed_assigned_by_application": False,
+            **provider_metadata,
         }
     if questions:
         return {
             "status": "needs_clarification", "assistant_message": proposal.assistant_message,
             "questions": questions, "field_errors": [], "hospital_choices": [],
             "configuration": None, "seed_assigned_by_application": False,
+            **provider_metadata,
         }
 
     seed_assigned = proposal.seed is None
@@ -640,6 +952,7 @@ def chat_with_assistant(db: Session, request: AssistantChatRequest) -> dict:
                 field=_validation_error_field(error), message=error["msg"]
             ) for error in exc.errors()], "hospital_choices": [], "configuration": None,
             "seed_assigned_by_application": False,
+            **provider_metadata,
         }
 
     try:
@@ -655,6 +968,7 @@ def chat_with_assistant(db: Session, request: AssistantChatRequest) -> dict:
             "status": "invalid", "assistant_message": "I found a configuration issue. Correct the highlighted values before continuing.",
             "questions": [], "field_errors": [AssistantFieldError(**item) for item in errors],
             "hospital_choices": [], "configuration": None, "seed_assigned_by_application": False,
+            **provider_metadata,
         }
     message = proposal.assistant_message.strip()
     if seed_assigned:
@@ -663,4 +977,5 @@ def chat_with_assistant(db: Session, request: AssistantChatRequest) -> dict:
         "status": "ready", "assistant_message": message, "questions": [],
         "field_errors": [], "hospital_choices": [],
         "configuration": configuration, "seed_assigned_by_application": seed_assigned,
+        **provider_metadata,
     }

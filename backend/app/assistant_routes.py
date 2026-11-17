@@ -9,10 +9,25 @@ from app.schemas import (
     AssistantChatResponse,
     AssistantConfigValidationRequest,
     AssistantConfigValidationResponse,
+    AssistantServiceStatusRead,
 )
-from app.services.assistant import chat_with_assistant, validate_assistant_config
+from app.services.assistant import (
+    chat_with_assistant,
+    gemini_key_is_configured,
+    groq_key_is_configured,
+    validate_assistant_config,
+)
 
 router = APIRouter(prefix="/api/v1/assistant", tags=["generation-assistant"])
+
+
+@router.get("/status", response_model=AssistantServiceStatusRead)
+def assistant_status() -> AssistantServiceStatusRead:
+    """Report backend key presence only; provider availability is learned from requests."""
+    return AssistantServiceStatusRead(
+        gemini_key_configured=gemini_key_is_configured(),
+        groq_key_configured=groq_key_is_configured(),
+    )
 
 
 @router.post("/chat", response_model=AssistantChatResponse)

@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "test:assistant-status": "node --test src/lib/assistant-status.test.mjs",
     "start": "next start"
   },
   "dependencies": {

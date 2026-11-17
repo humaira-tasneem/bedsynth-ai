@@ -10,7 +10,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.database import Base
 from app.main import app
-from app.models import Admission, Bed, BedTransfer, Department, Discharge, OccupancySnapshot
+from app.models import Admission, Bed, BedTransfer, Department, Discharge, GenerationRun, OccupancySnapshot
 from app.routes import get_db
 from test_synthetic_generation import generation_config, make_hospital, preview_and_generate
 
@@ -252,6 +252,43 @@ def test_compare_runs_reports_actual_metrics_metadata_and_percent_changes(analyt
     assert second["metrics_vs_baseline"]["average_occupancy_pct"]["percentage_change"] is not None
     assert all(item["occupancy_trend"] for item in payload["items"])
     assert all(item["departments"] for item in payload["items"])
+
+
+def test_comparison_maps_stored_scenario_code_and_keeps_absent_metadata_unavailable(analytics_client):
+    _, hospital_id, departments, first = create_run(analytics_client, admissions=2)
+    second_config = generation_config(departments, admissions=2, seed=919)
+    second_config["scenario"] = "low_occupancy"
+    second = preview_and_generate(analytics_client, hospital_id, second_config)
+
+    # A scenario code is sufficient to derive its display name, but missing
+    # scenario/profile fields on the historical run must remain unavailable.
+    with analytics_client.test_sessions() as db:
+        first_run = db.get(GenerationRun, first["run_id"])
+        first_config = dict(first_run.config)
+        first_config.pop("scenario_name", None)
+        first_run.config = first_config
+
+        second_run = db.get(GenerationRun, second["run_id"])
+        old_config = dict(second_run.config)
+        old_config.pop("scenario_name", None)
+        old_request = dict(old_config["request"])
+        old_request.pop("scenario", None)
+        old_request.pop("patient_profile", None)
+        old_config["request"] = old_request
+        second_run.config = old_config
+        db.commit()
+
+    response = analytics_client.post("/api/v1/analytics/runs/compare", json={
+        "run_ids": [first["run_id"], second["run_id"]],
+    })
+    assert response.status_code == 200, response.text
+    first_result, second_result = response.json()["items"]
+    assert first_result["scenario"] == "normal_operations"
+    assert first_result["scenario_name"] == "Normal Operations"
+    assert first_result["patient_profile"] == first["config"]["request"]["patient_profile"]
+    assert second_result["scenario"] is None
+    assert second_result["scenario_name"] is None
+    assert second_result["patient_profile"] is None
 
 
 def test_compare_rejects_cross_hospital_or_different_department_scope(analytics_client):
