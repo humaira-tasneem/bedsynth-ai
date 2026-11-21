@@ -56,7 +56,10 @@ class Hospital(Base):
 
 class User(Base):
     __tablename__ = "users"
-    __table_args__ = (CheckConstraint("role IN ('admin', 'user')", name="ck_user_role"),)
+    __table_args__ = (
+        CheckConstraint("role IN ('admin', 'user')", name="ck_user_role"),
+        Index("ix_users_created_at", "created_at"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     email: Mapped[str] = mapped_column(String(254, collation="NOCASE"), unique=True, nullable=False, index=True)

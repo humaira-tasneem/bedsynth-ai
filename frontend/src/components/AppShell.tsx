@@ -58,7 +58,10 @@ export default function AppShell({ children }: Readonly<{ children: React.ReactN
         const response = await fetch(`${apiBase}/api/v1/auth/me`, { credentials: "include", cache: "no-store" });
         if (response.ok) {
           const user = await response.json();
-          if (active) { setIdentity(user); setGuestSession(null); setAuthChecked(true); }
+          if (active) {
+            setIdentity((current) => current && current.id === user.id && current.email === user.email && current.role === user.role ? current : user);
+            setGuestSession(null); setAuthChecked(true);
+          }
         } else if (response.status === 401) {
           const guestResponse = await fetch(`${apiBase}/api/v1/guest/session`, { credentials: "include", cache: "no-store" });
           const guest = guestResponse.ok ? await guestResponse.json() : null;
@@ -71,7 +74,7 @@ export default function AppShell({ children }: Readonly<{ children: React.ReactN
     void verifySession(true);
     const timer = window.setInterval(() => void verifySession(), 30000);
     return () => { active = false; window.clearInterval(timer); };
-  }, [pathname]);
+  }, []);
 
   useEffect(() => {
     if (!authChecked) return;
@@ -196,8 +199,8 @@ export default function AppShell({ children }: Readonly<{ children: React.ReactN
         <div className="product-topbar-actions"><div className={`product-health health-${health}`} role="status" aria-live="polite"><i />{backendHealthLabel(health)}</div><button type="button" className="product-icon-button product-theme" onClick={toggleTheme} aria-label={`Switch to ${dark ? "light" : "dark"} theme`} title={`Switch to ${dark ? "light" : "dark"} theme`}>{dark ? <Sun size={18} /> : <Moon size={18} />}</button></div>
       </header>
       <MotionConfig reducedMotion="user">
-        <AnimatePresence mode="wait" initial={false}>
-          <motion.div key={pathname} className="product-route-frame" initial={{ opacity: 0, y: 7 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -3 }} transition={{ duration: 0.18, ease: "easeOut" }}>
+        <AnimatePresence mode="sync" initial={false}>
+          <motion.div key={pathname} className="product-route-frame" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.1, ease: "easeOut" }}>
             {children}
           </motion.div>
         </AnimatePresence>

@@ -3,12 +3,13 @@
 import math
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.auth import admin_user, current_user
 from app.database import get_db
-from app.models import Bed, Department, GenerationRun, Hospital, OccupancySnapshot, User, Workspace
+from app.models import (Admission, Bed, BedAssignment, BedTransfer, BedTurnaround, Department, Discharge,
+                        GenerationRun, Hospital, OccupancySnapshot, SyntheticPatient, User, WaitingQueueEntry, Workspace)
 from app.services.analytics import get_run_snapshot_summary, scenario_name_for_run
 from app.services.datasets import _list_item, _record_counts, _validation_summaries
 
@@ -26,34 +27,47 @@ def _record_total(counts) -> int:
 @router.get("/user")
 def user_dashboard(db: Session = Depends(get_db), user: User = Depends(current_user)) -> dict:
     """Summarize only non-deleted runs owned by the signed-in user."""
-    runs = list(db.scalars(select(GenerationRun).join(Workspace, Workspace.id == GenerationRun.workspace_id).where(
+    run_filter = (
         GenerationRun.owner_user_id == user.id,
         GenerationRun.guest_session_id.is_(None),
         GenerationRun.deleted_at.is_(None),
+        GenerationRun.status == "completed",
         Workspace.is_shared.is_(True),
-    ).order_by(GenerationRun.started_at.desc(), GenerationRun.run_id.desc())).all())
+    )
+    total_datasets = int(db.scalar(select(func.count(GenerationRun.run_id)).join(
+        Workspace, Workspace.id == GenerationRun.workspace_id
+    ).where(*run_filter)) or 0)
+    record_models = (SyntheticPatient, Admission, Discharge, BedAssignment, BedTransfer, OccupancySnapshot)
+    records = sum(db.scalar(select(func.count(model.id)).join(
+        GenerationRun, and_(GenerationRun.run_id == model.run_id,
+                            GenerationRun.workspace_id == model.workspace_id,
+                            GenerationRun.hospital_id == model.hospital_id)
+    ).join(Workspace, Workspace.id == GenerationRun.workspace_id).where(*run_filter)) or 0 for model in record_models)
+    records += sum(db.scalar(select(func.coalesce(func.sum(column), 0)).join(
+        Workspace, Workspace.id == GenerationRun.workspace_id
+    ).where(*run_filter)) or 0 for column in (GenerationRun.waiting_queue_count, GenerationRun.bed_turnaround_count))
+    runs = list(db.scalars(select(GenerationRun).join(Workspace, Workspace.id == GenerationRun.workspace_id)
+        .where(GenerationRun.owner_user_id == user.id, GenerationRun.guest_session_id.is_(None),
+               GenerationRun.deleted_at.is_(None), Workspace.is_shared.is_(True))
+        .order_by(GenerationRun.started_at.desc(), GenerationRun.run_id.desc()).limit(5)).all())
+    counts = _record_counts(db, runs)
     hospital_names = {row.id: row.name for row in db.scalars(select(Hospital).where(
         Hospital.id.in_({run.hospital_id for run in runs}) if runs else False,
     )).all()}
-    counts = _record_counts(db, runs)
-    completed = [run for run in runs if run.status == "completed"]
-    records = sum(_record_total(counts[run.run_id]) for run in completed)
     latest_occupancy = None
-    if completed:
-        snapshot_run_ids = set(db.scalars(select(OccupancySnapshot.run_id).where(
-            OccupancySnapshot.run_id.in_([run.run_id for run in completed]),
-        ).distinct()).all())
-        latest_snapshot_run = next((run for run in completed if run.run_id in snapshot_run_ids), None)
-        if latest_snapshot_run:
-            latest_occupancy = get_run_snapshot_summary(db, latest_snapshot_run)
+    latest_snapshot_run = db.scalar(select(GenerationRun).join(Workspace, Workspace.id == GenerationRun.workspace_id)
+        .where(*run_filter, select(OccupancySnapshot.id).where(OccupancySnapshot.run_id == GenerationRun.run_id).exists())
+        .order_by(GenerationRun.started_at.desc(), GenerationRun.run_id.desc()).limit(1))
+    if latest_snapshot_run:
+        latest_occupancy = get_run_snapshot_summary(db, latest_snapshot_run)
     recent = []
-    validations = _validation_summaries(db, runs[:5])
-    for run in runs[:5]:
+    validations = _validation_summaries(db, runs)
+    for run in runs:
         summary = _list_item(run, hospital_names.get(run.hospital_id, "Unavailable"), counts[run.run_id], validations.get(run.run_id, []))
         recent.append(summary.model_dump(mode="json"))
     return {
         "user_email": user.email,
-        "total_datasets": len(completed),
+        "total_datasets": total_datasets,
         "total_generated_records": records,
         "latest_occupancy_pct": latest_occupancy["latest_occupancy_pct"] if latest_occupancy else None,
         "latest_occupancy_date": latest_occupancy["latest_snapshot_date"] if latest_occupancy else None,
@@ -78,14 +92,23 @@ def admin_dashboard(db: Session = Depends(get_db)) -> dict:
         Bed.hospital_id.in_(hospital_ids) if hospital_ids else False,
         Bed.status != "retired",
     )) or 0
-    runs = list(db.scalars(select(GenerationRun).where(
+    run_filter = (
         GenerationRun.guest_session_id.is_(None),
         GenerationRun.deleted_at.is_(None),
-    ).order_by(GenerationRun.started_at.desc(), GenerationRun.run_id.desc())).all())
-    counts = _record_counts(db, runs)
-    completed = [run for run in runs if run.status == "completed"]
-    total_records = sum(_record_total(counts[run.run_id]) for run in completed)
-    recent_runs = runs[:8]
+    )
+    total_runs = db.scalar(select(func.count(GenerationRun.run_id)).where(*run_filter)) or 0
+    completed_filter = (*run_filter, GenerationRun.status == "completed")
+    record_models = (SyntheticPatient, Admission, Discharge, BedAssignment, BedTransfer, OccupancySnapshot)
+    total_records = sum(db.scalar(select(func.count(model.id)).join(
+        GenerationRun, and_(GenerationRun.run_id == model.run_id,
+                            GenerationRun.workspace_id == model.workspace_id,
+                            GenerationRun.hospital_id == model.hospital_id)
+    ).where(*completed_filter)) or 0 for model in record_models)
+    total_records += sum(db.scalar(select(func.coalesce(func.sum(column), 0)).where(*completed_filter)) or 0
+                         for column in (GenerationRun.waiting_queue_count, GenerationRun.bed_turnaround_count))
+    recent_runs = list(db.scalars(select(GenerationRun).where(*run_filter)
+        .order_by(GenerationRun.started_at.desc(), GenerationRun.run_id.desc()).limit(8)).all())
+    counts = _record_counts(db, recent_runs)
     hospital_names = {row.id: row.name for row in db.scalars(select(Hospital).where(
         Hospital.id.in_({run.hospital_id for run in recent_runs}) if recent_runs else False,
     )).all()}
@@ -97,7 +120,7 @@ def admin_dashboard(db: Session = Depends(get_db)) -> dict:
         "shared_hospitals": len(hospital_ids),
         "departments": departments,
         "beds": beds,
-        "generation_runs": len(runs),
+        "generation_runs": int(total_runs),
         "generated_records": total_records,
         "recent_activity": [{
             "run_id": run.run_id,

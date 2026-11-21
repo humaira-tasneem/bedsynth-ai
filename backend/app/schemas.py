@@ -59,6 +59,38 @@ class UserUpdate(BaseModel):
     is_active: bool | None = None
 
 
+class AdminUserItem(UserRead):
+    dataset_count: int = 0
+
+
+class AdminUserPage(BaseModel):
+    items: list[AdminUserItem]
+    total: int
+    page: int
+    page_size: int
+    pages: int
+
+
+class AdminUserStats(BaseModel):
+    total_accounts: int
+    active_accounts: int
+    deactivated_accounts: int
+    administrators: int
+    standard_users: int
+    registrations_7d: int
+    registrations_30d: int
+
+
+class RegistrationActivityPoint(BaseModel):
+    date: str
+    registrations: int
+
+
+class RegistrationActivity(BaseModel):
+    days: int
+    items: list[RegistrationActivityPoint]
+
+
 class WorkspaceSharingUpdate(BaseModel):
     is_shared: bool
 

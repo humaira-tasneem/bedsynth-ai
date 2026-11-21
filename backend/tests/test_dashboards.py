@@ -127,6 +127,53 @@ def test_admin_dashboard_and_dataset_listing_are_platform_wide(dashboard_client)
     assert with_deleted.json()["total"] == 5
 
 
+def test_admin_user_management_stats_filters_pagination_activity_and_detail(dashboard_client):
+    cookies = _seed(dashboard_client)
+    dashboard_client.cookies.set("bedsynth_session", cookies["admin"])
+
+    stats = dashboard_client.get("/api/v1/admin/users/stats")
+    assert stats.status_code == 200
+    assert stats.json() == {
+        "total_accounts": 4, "active_accounts": 3, "deactivated_accounts": 1,
+        "administrators": 1, "standard_users": 3,
+        "registrations_7d": 4, "registrations_30d": 4,
+    }
+
+    activity = dashboard_client.get("/api/v1/admin/users/activity?days=7")
+    assert activity.status_code == 200
+    assert len(activity.json()["items"]) == 7
+    assert sum(point["registrations"] for point in activity.json()["items"]) == 4
+
+    filtered = dashboard_client.get("/api/v1/admin/users?role=user&status=active&q=owner&page=1&page_size=1")
+    assert filtered.status_code == 200
+    body = filtered.json()
+    assert body["total"] == 1 and body["pages"] == 1 and body["page"] == 1
+    assert body["items"][0]["email"] == "owner@bedsynth.test"
+    assert body["items"][0]["dataset_count"] == 2
+    assert "password_hash" not in body["items"][0]
+
+    first_page = dashboard_client.get("/api/v1/admin/users?page=1&page_size=2&sort=oldest").json()
+    second_page = dashboard_client.get("/api/v1/admin/users?page=2&page_size=2&sort=oldest").json()
+    assert first_page["total"] == 4 and first_page["pages"] == 2
+    assert first_page["items"][0]["created_at"] <= first_page["items"][1]["created_at"]
+    assert len(second_page["items"]) == 2
+    assert {item["id"] for item in first_page["items"]}.isdisjoint(item["id"] for item in second_page["items"])
+
+    detail = dashboard_client.get(f"/api/v1/admin/users/{body['items'][0]['id']}")
+    assert detail.status_code == 200
+    assert detail.json()["dataset_count"] == 2
+    assert "last_login" not in detail.json()
+    assert dashboard_client.get("/api/v1/admin/users/99999").status_code == 404
+    assert dashboard_client.get("/api/v1/admin/users?role=owner").status_code == 422
+
+
+def test_admin_user_management_is_admin_only(dashboard_client):
+    cookies = _seed(dashboard_client)
+    assert dashboard_client.get("/api/v1/admin/users/stats").status_code == 401
+    dashboard_client.cookies.set("bedsynth_session", cookies["owner"])
+    assert dashboard_client.get("/api/v1/admin/users/activity").status_code == 403
+
+
 def test_dashboard_routes_require_authentication(dashboard_client):
     assert dashboard_client.get("/api/v1/dashboard/user").status_code == 401
     assert dashboard_client.get("/api/v1/admin/dashboard").status_code == 401
