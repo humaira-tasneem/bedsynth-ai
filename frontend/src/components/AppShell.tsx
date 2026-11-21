@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 import { AnimatePresence, MotionConfig, motion } from "framer-motion";
 import { backendHealthLabel } from "@/lib/assistant-status.mjs";
 import { landingPathForRole, restrictedDestination } from "@/lib/role-routing.mjs";
+import { guestRouteAllowed } from "@/lib/guest-access.mjs";
 import {
   Activity, BarChart3, Building2, ChevronDown, Database, LogOut, UserRoundCog,
   FlaskConical, LayoutDashboard, Menu, Moon, PanelLeftClose,
@@ -29,6 +30,7 @@ const userNavigationGroups = [
   { label: "RESEARCH", items: [{ href: "/", label: "Dashboard", icon: LayoutDashboard }, { href: "/generate", label: "Generate Dataset", icon: FlaskConical }, { href: "/datasets", label: "My Datasets", icon: Database }, { href: "/analytics", label: "My Analytics", icon: BarChart3 }, { href: "/assistant", label: "AI Assistant", icon: Sparkles }] },
   { label: "PREFERENCES", items: [{ href: "/settings", label: "Settings", icon: Activity }] },
 ];
+const guestNavigationGroups = [{ label: "GUEST MODE", items: [{ href: "/generate", label: "Generate Dataset", icon: FlaskConical }] }];
 
 function routeLabel(pathname: string, navigation: { href: string; label: string }[]) {
   if (pathname.startsWith("/datasets/")) return "Dataset details";
@@ -43,9 +45,10 @@ export default function AppShell({ children }: Readonly<{ children: React.ReactN
   const [dark, setDark] = useState(false);
   const [health, setHealth] = useState<"checking" | "online" | "offline">("checking");
   const [identity, setIdentity] = useState<{ id: number; email: string; role: "admin" | "user" } | null>(null);
+  const [guestSession, setGuestSession] = useState<{ expires_at: string } | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
   const isAuthPage = pathname === "/login" || pathname === "/register";
-  const navigationGroups = identity?.role === "admin" ? adminNavigationGroups : userNavigationGroups;
+  const navigationGroups = identity?.role === "admin" ? adminNavigationGroups : guestSession ? guestNavigationGroups : userNavigationGroups;
   const navigation = navigationGroups.flatMap((group) => group.items);
 
   useEffect(() => {
@@ -55,9 +58,11 @@ export default function AppShell({ children }: Readonly<{ children: React.ReactN
         const response = await fetch(`${apiBase}/api/v1/auth/me`, { credentials: "include", cache: "no-store" });
         if (response.ok) {
           const user = await response.json();
-          if (active) { setIdentity(user); setAuthChecked(true); }
+          if (active) { setIdentity(user); setGuestSession(null); setAuthChecked(true); }
         } else if (response.status === 401) {
-          if (active) { setIdentity(null); setAuthChecked(true); }
+          const guestResponse = await fetch(`${apiBase}/api/v1/guest/session`, { credentials: "include", cache: "no-store" });
+          const guest = guestResponse.ok ? await guestResponse.json() : null;
+          if (active) { setIdentity(null); setGuestSession(guest); setAuthChecked(true); }
         } else if (initial && active) setAuthChecked(true);
       } catch {
         if (initial && active) { setIdentity(null); setAuthChecked(true); }
@@ -70,14 +75,16 @@ export default function AppShell({ children }: Readonly<{ children: React.ReactN
 
   useEffect(() => {
     if (!authChecked) return;
-    if (!identity && !isAuthPage) router.replace("/login");
+    if (!identity && !guestSession && !isAuthPage && pathname !== "/") router.replace("/");
+    if (guestSession && !guestRouteAllowed(pathname)) router.replace("/generate");
+    if (guestSession && pathname === "/") return;
     if (identity && isAuthPage) router.replace(landingPathForRole(identity.role));
     if (identity) {
       const restricted = restrictedDestination(identity.role, pathname);
       if (restricted) router.replace(restricted);
       else if (identity.role === "admin" && pathname === "/") router.replace("/admin");
     }
-  }, [authChecked, identity, isAuthPage, router]);
+  }, [authChecked, guestSession, identity, isAuthPage, pathname, router]);
 
   useEffect(() => {
     setCollapsed(window.localStorage.getItem("bedsynth-sidebar-collapsed") === "true");
@@ -132,10 +139,18 @@ export default function AppShell({ children }: Readonly<{ children: React.ReactN
     window.localStorage.setItem("bedsynth-theme", next ? "dark" : "light");
   }
 
-  if (!authChecked || (!identity && !isAuthPage)) return <main className="auth-loading" role="status">Checking your secure session…</main>;
+  if (!authChecked && pathname !== "/" && !isAuthPage) return <main className="auth-loading" role="status">Checking your secure session…</main>;
   if (isAuthPage) return <>{children}</>;
+  if (!identity && !guestSession && pathname === "/") return <>{children}</>;
+  if (!identity && !guestSession) return <main className="auth-loading" role="status">Returning to the BedSynth AI welcome page…</main>;
 
   async function logout() {
+    if (guestSession) {
+      await fetch(`${apiBase}/api/v1/guest/session`, { method: "DELETE", credentials: "include", headers: { Origin: window.location.origin } });
+      setGuestSession(null);
+      router.replace("/");
+      return;
+    }
     await fetch(`${apiBase}/api/v1/auth/logout`, { method: "POST", credentials: "include" });
     setIdentity(null);
     router.replace("/login");
@@ -149,9 +164,9 @@ export default function AppShell({ children }: Readonly<{ children: React.ReactN
         <button className="product-icon-button product-mobile-close" type="button" aria-label="Close navigation" onClick={() => setMobileOpen(false)}><X size={19} /></button>
         <button className="product-icon-button product-collapse" type="button" onClick={toggleSidebar} aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"} title={collapsed ? "Expand sidebar" : "Collapse sidebar"} aria-expanded={!collapsed}>{collapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}</button>
       </div>
-      <button className="product-workspace" type="button" title="My workspace organizes hospitals and hospital networks">
+      {!guestSession && <button className="product-workspace" type="button" title="My workspace organizes hospitals and hospital networks">
         <span className="product-workspace-avatar">B</span><span className="product-workspace-copy"><small>WORKSPACE</small><strong>My workspace</strong><span className="product-workspace-detail">Hospitals &amp; networks</span></span><ChevronDown size={15} />
-      </button>
+      </button>}
       <nav className="product-navigation" aria-label="Application sections">
         {navigationGroups.map((group) => <div className="product-nav-group" key={group.label}>
           <span className="product-nav-label">{group.label}</span>
@@ -166,8 +181,9 @@ export default function AppShell({ children }: Readonly<{ children: React.ReactN
         </div>)}
       </nav>
       <div className="product-sidebar-footer">
-        <div className="product-privacy"><ShieldCheck size={17} /><span>PRIVACY &amp; DATA SAFETY<br /><strong>No patient data connected</strong></span></div>
-        <div className="product-user-identity"><span className="product-workspace-avatar">{identity?.email.slice(0, 1).toUpperCase()}</span><span className="product-workspace-copy"><small>{identity?.role === "admin" ? "ADMINISTRATOR" : "USER"}</small><strong>{identity?.email}</strong></span><button className="product-icon-button" type="button" onClick={logout} aria-label="Sign out" title="Sign out"><LogOut size={17} /></button></div>
+        <div className="product-privacy"><ShieldCheck size={17} /><span>{guestSession ? "TEMPORARY GUEST SESSION" : "PRIVACY & DATA SAFETY"}<br /><strong>{guestSession ? `Expires ${new Date(guestSession.expires_at).toLocaleString()}` : "No patient data connected"}</strong></span></div>
+        <div className="product-user-identity"><span className="product-workspace-avatar">{guestSession ? "G" : identity?.email.slice(0, 1).toUpperCase()}</span><span className="product-workspace-copy"><small>{guestSession ? "GUEST MODE" : identity?.role === "admin" ? "ADMINISTRATOR" : "USER"}</small><strong>{guestSession ? "Temporary access" : identity?.email}</strong></span><button className="product-icon-button" type="button" onClick={logout} aria-label={guestSession ? "End guest session" : "Sign out"} title={guestSession ? "End guest session" : "Sign out"}><LogOut size={17} /></button></div>
+        {guestSession && <Link className="product-nav-link" href="/register">Create an account</Link>}
       </div>
     </aside>
 

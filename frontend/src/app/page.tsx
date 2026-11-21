@@ -2,18 +2,33 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
-import { Activity, ArrowRight, BarChart3, Database, FlaskConical, LoaderCircle } from "lucide-react";
+import { Activity, ArrowRight, BarChart3, Database, FlaskConical, LoaderCircle, ShieldCheck, UserRound } from "lucide-react";
 
 const apiBase = (process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
 type Run = { run_id: string; hospital_name: string; started_at: string; status: string; scenario_name: string | null; record_counts: { patients: number; admissions: number } };
 type Dashboard = { user_email: string; total_datasets: number; total_generated_records: number; latest_occupancy_pct: number | null; latest_occupancy_date: string | null; recent_runs: Run[] };
 
 export default function HomePage() {
+  const router = useRouter();
+  const [access, setAccess] = useState<"checking" | "account" | "anonymous" | "guest">("checking");
+  const [startingGuest, setStartingGuest] = useState(false);
+  const [guestError, setGuestError] = useState("");
   const [data, setData] = useState<Dashboard | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   useEffect(() => {
+    let active = true;
+    fetch(`${apiBase}/api/v1/auth/me`, { credentials: "include", cache: "no-store" }).then(async (response) => {
+      if (response.ok) { if (active) setAccess("account"); return; }
+      const guest = await fetch(`${apiBase}/api/v1/guest/session`, { credentials: "include", cache: "no-store" });
+      if (active) setAccess(guest.ok ? "guest" : "anonymous");
+    }).catch(() => { if (active) setAccess("anonymous"); });
+    return () => { active = false; };
+  }, []);
+  useEffect(() => {
+    if (access !== "account") return;
     let active = true;
     fetch(`${apiBase}/api/v1/dashboard/user`, { credentials: "include", cache: "no-store" })
       .then(async (response) => { if (!response.ok) throw new Error(response.status === 401 ? "Your session has expired. Sign in again." : "Dashboard data could not be loaded."); return response.json(); })
@@ -21,13 +36,37 @@ export default function HomePage() {
       .catch((cause) => { if (active) setError(cause instanceof Error ? cause.message : "Dashboard data could not be loaded."); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, []);
+  }, [access]);
+
+  async function continueAsGuest() {
+    setStartingGuest(true); setGuestError("");
+    try {
+      if (access !== "guest") {
+        const response = await fetch(`${apiBase}/api/v1/guest/sessions`, { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" } });
+        const body = await response.json().catch(() => null);
+        if (!response.ok) throw new Error(body?.detail ?? "Guest access could not be started. Please try again.");
+      }
+      router.push("/generate");
+    } catch (cause) { setGuestError(cause instanceof Error ? cause.message : "Guest access could not be started."); }
+    finally { setStartingGuest(false); }
+  }
 
   const cards = [
     { label: "Your datasets", value: data?.total_datasets ?? 0, detail: "Completed runs you own", icon: Database, tone: "metric-icon-violet" },
     { label: "Synthetic records", value: data?.total_generated_records.toLocaleString() ?? "0", detail: "Persisted operational rows; bed inventory excluded", icon: Activity, tone: "metric-icon-blue" },
     { label: "Latest occupancy", value: data?.latest_occupancy_pct == null ? "Unavailable" : `${data.latest_occupancy_pct.toFixed(1)}%`, detail: data?.latest_occupancy_date ? `Snapshot · ${data.latest_occupancy_date}` : "No saved occupancy snapshot", icon: BarChart3, tone: "metric-icon-teal" },
   ];
+
+  if (access !== "account") return <main className="page-content dashboard-page guest-welcome-page" id="main-content">
+    <header className="dashboard-welcome-row"><div className="page-heading"><div className="page-kicker"><span className="kicker-line" /> SYNTHETIC OPERATIONS STUDIO</div><h1>BedSynth AI</h1><p className="page-subtitle">Create reproducible, fictional hospital operations datasets for research and optimization testing.</p></div></header>
+    {access === "checking" ? <div className="generator-loading" role="status"><LoaderCircle className="generator-spin" size={20} /> Checking access options…</div> : <section className="guest-access-options" aria-label="Choose how to continue">
+      <article className="dashboard-shortcut"><span className="metric-icon metric-icon-teal"><ShieldCheck size={22} /></span><span><strong>Try BedSynth AI as a guest</strong><small>Generate and download temporary datasets from shared hospitals. No registration required.</small></span><button className="button button-primary" type="button" disabled={startingGuest} onClick={continueAsGuest}>{startingGuest ? "Starting…" : access === "guest" ? "Resume guest session" : "Continue as Guest"}<ArrowRight size={16} /></button></article>
+      <article className="dashboard-shortcut"><span className="metric-icon metric-icon-violet"><UserRound size={22} /></span><span><strong>Use an account</strong><small>Sign in or create an account to save datasets and access your research workspace.</small></span><div className="guest-account-actions"><Link href="/login" className="button button-secondary">Sign In</Link><Link href="/register" className="text-link">Create Account <ArrowRight size={14} /></Link></div></article>
+      {guestError && <div className="generator-alert generator-alert-error" role="alert">{guestError}</div>}
+      <p className="guest-temporary-notice">Guest datasets are temporary and automatically expire after 24 hours. Do not enter patient-identifying or clinical information.</p>
+    </section>}
+    <footer className="page-footer"><span>BedSynth AI · Synthetic data for research and optimization testing</span><span>Generated records are fictional</span></footer>
+  </main>;
 
   return <main className="page-content dashboard-page" id="main-content">
     <div className="dashboard-welcome-row"><div className="page-heading"><div><div className="page-kicker"><span className="kicker-line" /> RESEARCH WORKSPACE</div><h1>Welcome{data?.user_email ? `, ${data.user_email.split("@")[0]}` : " to BedSynth AI"}</h1><p className="page-subtitle">Create reproducible synthetic hospital operations datasets for research and model testing.</p></div></div><Link href="/generate" className="button button-primary dashboard-primary-action"><FlaskConical size={18} /> Generate Dataset <ArrowRight size={16} /></Link></div>

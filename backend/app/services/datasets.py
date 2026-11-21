@@ -188,6 +188,7 @@ def list_datasets(db: Session, workspace_id: int, *, page: int, page_size: int,
     query = select(GenerationRun, Hospital.name).join(Hospital, Hospital.id == GenerationRun.hospital_id).where(
         GenerationRun.workspace_id == workspace_id,
         Hospital.workspace_id == workspace_id,
+        GenerationRun.guest_session_id.is_(None),
     )
     if owner_user_id is not None:
         query = query.where(GenerationRun.owner_user_id == owner_user_id)

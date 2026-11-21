@@ -1,6 +1,7 @@
 """BedSynth AI FastAPI entry point."""
 
 import os
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -22,6 +23,8 @@ from app.assistant_routes import router as assistant_router
 from app.auth_routes import router as auth_router, admin_router
 from app.dashboard_routes import router as dashboard_router, admin_router as admin_dashboard_router
 from app.auth import FRONTEND_ORIGINS
+from app.database import SessionLocal
+from app.guest_routes import cleanup_expired_guest_sessions, router as guest_router
 
 
 class HealthResponse(BaseModel):
@@ -34,7 +37,28 @@ class HealthResponse(BaseModel):
 async def lifespan(_: FastAPI):
     # Create tables and add only the columns needed by the first Hospital Studio schema.
     initialize_database()
-    yield
+    with SessionLocal() as db:
+        cleanup_expired_guest_sessions(db)
+    task = asyncio.create_task(_periodic_guest_cleanup())
+    try:
+        yield
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
+async def _periodic_guest_cleanup() -> None:
+    while True:
+        await asyncio.sleep(3600)
+        try:
+            with SessionLocal() as db:
+                cleanup_expired_guest_sessions(db)
+        except Exception:
+            # Keep the periodic worker alive; expired sessions remain denied by request auth.
+            continue
 
 
 app = FastAPI(
@@ -57,7 +81,8 @@ async def validate_browser_origin(request, call_next):
     """Reject cross-origin unsafe browser requests, including credentialed requests."""
     if request.method not in {"GET", "HEAD", "OPTIONS"} and request.url.path.startswith("/api/v1/"):
         origin = request.headers.get("origin")
-        cookie_present = "bedsynth_session=" in request.headers.get("cookie", "")
+        cookies = request.headers.get("cookie", "")
+        cookie_present = "bedsynth_session=" in cookies or "bedsynth_guest_session=" in cookies
         if origin and origin.rstrip("/") not in FRONTEND_ORIGINS:
             return JSONResponse(status_code=403, content={"detail": "Request origin is not allowed."})
         if cookie_present and not origin:
@@ -86,6 +111,7 @@ app.include_router(hospital_studio_router)
 app.include_router(analytics_router)
 app.include_router(datasets_router)
 app.include_router(assistant_router)
+app.include_router(guest_router)
 
 
 @app.get("/health", response_model=HealthResponse, tags=["system"])

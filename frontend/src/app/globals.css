@@ -407,5 +407,24 @@ button:focus-visible { outline: 3px solid var(--cyan); outline-offset: 3px; }
 .dataset-delete-dialog > div { display: flex; justify-content: flex-end; gap: 9px; margin-top: 20px; }
 .generator-button-danger { min-height: 40px; padding: 9px 13px; border: 1px solid #b42318; border-radius: 9px; background: #b42318; color: white; font-weight: 650; cursor: pointer; }
 .dataset-deleted-label { color: #b42318; font-size: 12px; font-weight: 650; }
+.guest-access-options { display: grid; gap: 16px; max-width: 850px; margin: 28px auto; }
+.guest-access-options .dashboard-shortcut { grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: 16px; padding: 22px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); box-shadow: 0 5px 18px rgba(20,41,66,.045); }
+.guest-access-options .dashboard-shortcut strong { color: var(--text); font-size: 17px; }
+.guest-access-options .dashboard-shortcut small { display: block; margin-top: 5px; color: var(--text-secondary); font-size: 14px; line-height: 1.55; }
+.guest-account-actions { display: flex; align-items: center; gap: 14px; }
+.guest-temporary-notice,.guest-account-prompt { padding: 13px 15px; border: 1px solid color-mix(in srgb,var(--primary) 24%,var(--border)); border-radius: 10px; color: var(--text-secondary); background: var(--primary-soft); font-size: 13px; line-height: 1.55; }
+.guest-mode-pill { padding: 8px 11px; border: 1px solid color-mix(in srgb,var(--primary) 26%,var(--border)); border-radius: 20px; color: var(--primary); background: var(--primary-soft); }
+.guest-dataset-summary,.guest-download-card,.guest-validation-card { margin: 18px 0; }
+.guest-dataset-facts { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 14px; padding: 18px; margin: 0; }
+.guest-dataset-facts > div { min-width: 0; padding: 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-muted); }
+.guest-dataset-facts dt { color: var(--text-secondary); font-size: 12px; }
+.guest-dataset-facts dd { overflow-wrap: anywhere; margin: 5px 0 0; color: var(--text); font-size: 14px; font-weight: 650; }
+.guest-download-grid { display: flex; flex-wrap: wrap; gap: 9px; padding: 18px; }
+.guest-download-grid .button { min-height: 42px; font-size: 13px; text-transform: capitalize; }
+.guest-validation-card .generator-card-header { flex-wrap: wrap; }
+.generator-inline-success { padding: 0 18px 18px; color: var(--primary); font-size: 14px; }
+.guest-account-prompt { margin: 16px 0; background: var(--surface); }
+@media (max-width: 650px) { .guest-access-options .dashboard-shortcut { grid-template-columns: auto minmax(0,1fr); padding: 17px; }.guest-access-options .dashboard-shortcut > button,.guest-account-actions { grid-column: 1 / -1; justify-self: stretch; flex-wrap: wrap; }.guest-dataset-facts { grid-template-columns: repeat(2,minmax(0,1fr)); }.guest-download-grid { display: grid; grid-template-columns: 1fr; }.guest-download-grid .button { justify-content: flex-start; } }
+@media (max-width: 390px) { .guest-dataset-facts { grid-template-columns: 1fr; } }
 @media (max-width: 1000px) { .admin-metric-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }.admin-quick-actions { grid-template-columns: 1fr; }.admin-dataset-filters { grid-template-columns: repeat(2,minmax(0,1fr)); } }
 @media (max-width: 640px) { .admin-metric-grid,.admin-dataset-filters { grid-template-columns: 1fr; }.dataset-card-actions { grid-column: 1 / -1; }.dataset-delete-dialog { padding: 20px; } }

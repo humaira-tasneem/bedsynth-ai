@@ -28,6 +28,7 @@ def user_dashboard(db: Session = Depends(get_db), user: User = Depends(current_u
     """Summarize only non-deleted runs owned by the signed-in user."""
     runs = list(db.scalars(select(GenerationRun).join(Workspace, Workspace.id == GenerationRun.workspace_id).where(
         GenerationRun.owner_user_id == user.id,
+        GenerationRun.guest_session_id.is_(None),
         GenerationRun.deleted_at.is_(None),
         Workspace.is_shared.is_(True),
     ).order_by(GenerationRun.started_at.desc(), GenerationRun.run_id.desc())).all())
@@ -78,6 +79,7 @@ def admin_dashboard(db: Session = Depends(get_db)) -> dict:
         Bed.status != "retired",
     )) or 0
     runs = list(db.scalars(select(GenerationRun).where(
+        GenerationRun.guest_session_id.is_(None),
         GenerationRun.deleted_at.is_(None),
     ).order_by(GenerationRun.started_at.desc(), GenerationRun.run_id.desc())).all())
     counts = _record_counts(db, runs)
@@ -123,7 +125,7 @@ def admin_datasets(
     """Search across platform runs, including historical unowned runs."""
     query = select(GenerationRun, Hospital.name, User.email).join(
         Hospital, (Hospital.id == GenerationRun.hospital_id) & (Hospital.workspace_id == GenerationRun.workspace_id),
-    ).outerjoin(User, User.id == GenerationRun.owner_user_id)
+    ).outerjoin(User, User.id == GenerationRun.owner_user_id).where(GenerationRun.guest_session_id.is_(None))
     if not include_deleted:
         query = query.where(GenerationRun.deleted_at.is_(None))
     if hospital_id is not None:

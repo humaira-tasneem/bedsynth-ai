@@ -112,6 +112,17 @@ def enforce_role_by_method(request: Request, user: User = Depends(current_user))
 def resource_access(request: Request, db: Session = Depends(get_db), user: User = Depends(current_user)) -> None:
     """Enforce workspace sharing and per-user run ownership for URL-scoped routes."""
     if user.role == "admin":
+        run_id = request.path_params.get("run_id")
+        if run_id is not None:
+            run = db.get(GenerationRun, str(run_id))
+            if run is None or run.guest_session_id is not None:
+                raise HTTPException(status_code=404, detail="Dataset not found.")
+        validation_id = request.path_params.get("validation_id")
+        if validation_id is not None:
+            report = db.get(ValidationReport, str(validation_id))
+            run = db.get(GenerationRun, report.run_id) if report else None
+            if run is None or run.guest_session_id is not None:
+                raise HTTPException(status_code=404, detail="Validation report not found.")
         return
     params = request.path_params
     workspace_id = params.get("workspace_id")
@@ -127,11 +138,11 @@ def resource_access(request: Request, db: Session = Depends(get_db), user: User 
     run_id = params.get("run_id")
     if run_id is not None:
         run = db.get(GenerationRun, str(run_id))
-        if run is None or run.owner_user_id != user.id or run.deleted_at is not None:
+        if run is None or run.guest_session_id is not None or run.deleted_at is not None or (user.role != "admin" and run.owner_user_id != user.id):
             raise HTTPException(status_code=404, detail="Dataset not found.")
     validation_id = params.get("validation_id")
     if validation_id is not None:
         report = db.get(ValidationReport, str(validation_id))
         run = db.get(GenerationRun, report.run_id) if report else None
-        if run is None or run.owner_user_id != user.id or run.deleted_at is not None:
+        if run is None or run.guest_session_id is not None or run.deleted_at is not None or (user.role != "admin" and run.owner_user_id != user.id):
             raise HTTPException(status_code=404, detail="Validation report not found.")

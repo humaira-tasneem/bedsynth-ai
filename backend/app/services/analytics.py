@@ -63,6 +63,7 @@ def _context(db: Session, hospital_id: int, filters: AnalyticsFilters, owner_use
 
     run_query = select(GenerationRun).where(
         GenerationRun.hospital_id == hospital_id,
+        GenerationRun.guest_session_id.is_(None),
         GenerationRun.status == "completed",
         GenerationRun.deleted_at.is_(None),
     ).order_by(GenerationRun.completed_at.desc(), GenerationRun.started_at.desc())
@@ -503,6 +504,7 @@ def list_analytics_runs(db: Session, hospital_id: int, owner_user_id: int | None
         raise HTTPException(status_code=404, detail="Hospital not found.")
     runs = db.scalars(select(GenerationRun).where(
         GenerationRun.hospital_id == hospital_id,
+        GenerationRun.guest_session_id.is_(None),
         GenerationRun.status == "completed",
         GenerationRun.deleted_at.is_(None),
     ).order_by(GenerationRun.completed_at.desc(), GenerationRun.started_at.desc())).all()
@@ -537,6 +539,7 @@ def list_analytics_runs(db: Session, hospital_id: int, owner_user_id: int | None
 def compare_analytics_runs(db: Session, request: AnalyticsComparisonRequest, owner_user_id: int | None = None) -> dict:
     runs = list(db.scalars(select(GenerationRun).where(
         GenerationRun.run_id.in_([str(run_id) for run_id in request.run_ids]),
+        GenerationRun.guest_session_id.is_(None),
         GenerationRun.status == "completed",
         GenerationRun.deleted_at.is_(None),
     )).all())

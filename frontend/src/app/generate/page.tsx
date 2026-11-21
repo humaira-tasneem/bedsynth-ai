@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
+import { guestApiPrefix, guestDatasetPath } from "@/lib/guest-access.mjs";
 import { Activity, ArrowLeft, ArrowUpRight, BedDouble, Check, CircleAlert, FlaskConical, LoaderCircle, RefreshCw, ShieldCheck, Siren, TrendingUp, Waves, Sun } from "lucide-react";
 
 const apiBase = (process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
@@ -122,6 +123,8 @@ export default function SyntheticDataGeneratorPage() {
   const [success, setSuccess] = useState("");
   const [completedRunId, setCompletedRunId] = useState<string | null>(null);
   const [apiOnline, setApiOnline] = useState<boolean | null>(null);
+  const [guestMode, setGuestMode] = useState(false);
+  const [guestExpiresAt, setGuestExpiresAt] = useState<string | null>(null);
   const confirmRef = useRef<HTMLDialogElement>(null);
 
   useEffect(() => {
@@ -165,12 +168,12 @@ export default function SyntheticDataGeneratorPage() {
     && profile.minimum_days > 0 && profile.minimum_days <= profile.mode_days && profile.mode_days <= profile.maximum_days && profile.maximum_days <= 366
     && (profile.distribution !== "fixed" || profile.minimum_days === profile.mode_days && profile.mode_days === profile.maximum_days));
 
-  async function loadHospitals(id: number, assistantHandoff?: AssistantHandoff) {
+  async function loadHospitals(id: number, assistantHandoff?: AssistantHandoff, guestAccess = guestMode) {
     setLoadingHospitals(true);
     setHospitals([]); setHospitalId(null); setSelectedDepartmentIds([]); setPreview(null); setHistory([]);
     setForm((current) => ({ ...current, department_length_of_stay_profiles: [] }));
     try {
-      const entries = await api<Hospital[]>(`/api/v1/workspaces/${id}/hospitals`);
+      const entries = await api<Hospital[]>(`${guestApiPrefix(guestAccess)}/workspaces/${id}/hospitals`);
       setHospitals(entries);
       const handoffHospital = assistantHandoff && assistantHandoff.workspace_id === id
         ? entries.find((hospital) => hospital.id === assistantHandoff.hospital_id)
@@ -195,12 +198,15 @@ export default function SyntheticDataGeneratorPage() {
     let mounted = true;
     async function initialize() {
       try {
+        const guestResponse = await fetch(`${apiBase}/api/v1/guest/session`, { credentials: "include", cache: "no-store" });
+        const guest = guestResponse.ok ? await guestResponse.json() as { expires_at: string } : null;
+        if (mounted) { setGuestMode(Boolean(guest)); setGuestExpiresAt(guest?.expires_at ?? null); }
         const [health, workspaceEntries] = await Promise.all([
           fetch(`${apiBase}/health`, { cache: "no-store", credentials: "include" }).then((response) => {
             if (!response.ok) throw new Error("Backend health check failed.");
             return response.json() as Promise<{ status: string }>;
           }),
-          api<Workspace[]>("/api/v1/workspaces"),
+          api<Workspace[]>(`${guestApiPrefix(Boolean(guest))}/workspaces`),
         ]);
         if (!mounted) return;
         setApiOnline(health.status === "ok");
@@ -217,7 +223,7 @@ export default function SyntheticDataGeneratorPage() {
             ? handoff.workspace_id
             : workspaceEntries[0].id;
           setWorkspaceId(targetWorkspaceId);
-          await loadHospitals(targetWorkspaceId, handoff);
+          await loadHospitals(targetWorkspaceId, handoff, Boolean(guest));
         }
       } catch (cause) {
         if (!mounted) return;
@@ -232,6 +238,7 @@ export default function SyntheticDataGeneratorPage() {
   async function loadHistory(hospital: Hospital) {
     setHistoryError("");
     try {
+      if (guestMode) { setHistory([]); return; }
       const rows = await api<Run[]>(`/api/v1/workspaces/${hospital.workspace_id}/generation-runs?hospital_id=${hospital.id}`);
       setHistory(rows);
     } catch (cause) {
@@ -241,7 +248,7 @@ export default function SyntheticDataGeneratorPage() {
 
   useEffect(() => {
     if (selectedHospital) void loadHistory(selectedHospital);
-  }, [selectedHospital?.id]);
+  }, [selectedHospital?.id, guestMode]);
 
   function updateForm<K extends keyof FormConfig>(key: K, value: FormConfig[K]) {
     setForm((current) => ({ ...current, [key]: value }));
@@ -305,7 +312,7 @@ export default function SyntheticDataGeneratorPage() {
         department_length_of_stay_profiles: form.department_length_of_stay_profiles.filter((item) => effectiveDepartmentIds.includes(item.department_id)),
         department_bed_turnaround_profiles: form.department_bed_turnaround_profiles.filter((item) => effectiveDepartmentIds.includes(item.department_id)),
       };
-      const result = await api<Preview>(`/api/v1/hospitals/${selectedHospital.id}/generation-runs/preview`, { method: "POST", body: JSON.stringify(config) });
+      const result = await api<Preview>(`${guestApiPrefix(guestMode)}/hospitals/${selectedHospital.id}/generation-runs/preview`, { method: "POST", body: JSON.stringify(config) });
       setPreview(result);
       setIdempotencyKey(crypto.randomUUID());
     } catch (cause) {
@@ -317,7 +324,7 @@ export default function SyntheticDataGeneratorPage() {
     if (!preview || !selectedHospital || !idempotencyKey) return;
     setGenerating(true); setConfirmOpen(false); setError(""); setSuccess("");
     try {
-      const result = await api<Run>(`/api/v1/hospitals/${selectedHospital.id}/generation-runs`, {
+      const result = await api<Run>(`${guestApiPrefix(guestMode)}/hospitals/${selectedHospital.id}/generation-runs`, {
         method: "POST",
         body: JSON.stringify({
           start_date: form.start_date,
@@ -347,7 +354,7 @@ export default function SyntheticDataGeneratorPage() {
         setCompletedRunId(result.run_id);
         setSuccess(`Generation completed: ${result.patients_count} synthetic patients, ${result.admissions_count} assigned admissions, ${result.waiting_queue_count ?? 0} request outcomes, ${result.bed_turnaround_count ?? 0} turnaround events, ${result.transfers_count} transfers, and ${result.snapshots_count} occupancy snapshots.`);
       }
-      await loadHistory(selectedHospital);
+      if (!guestMode) await loadHistory(selectedHospital);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not generate the dataset.");
       if (cause instanceof Error && (cause.message.toLowerCase().includes("preview") || cause.message.toLowerCase().includes("idempotency"))) {
@@ -362,19 +369,20 @@ export default function SyntheticDataGeneratorPage() {
     <main className="generator-page" id="main-content">
       <header className="generator-topbar">
         <Link href="/" className="generator-brand"><span className="generator-brand-mark"><Activity size={19} /></span><span>BedSynth <strong>AI</strong></span></Link>
-        <nav aria-label="Workspace navigation"><Link href="/" className="generator-nav-link"><ArrowLeft size={15} /> Overview</Link><Link href="/assistant" className="generator-nav-link">AI Assistant <ArrowUpRight size={14} /></Link><Link href="/hospitals" className="generator-nav-link">Hospital Studio <ArrowUpRight size={14} /></Link><Link href="/validation" className="generator-nav-link">Data validation <ArrowUpRight size={14} /></Link></nav>
+        <nav aria-label="Workspace navigation">{guestMode ? <span className="generator-nav-link guest-mode-pill"><ShieldCheck size={15} /> Guest Mode</span> : <><Link href="/" className="generator-nav-link"><ArrowLeft size={15} /> Overview</Link><Link href="/assistant" className="generator-nav-link">AI Assistant <ArrowUpRight size={14} /></Link><Link href="/hospitals" className="generator-nav-link">Hospital Studio <ArrowUpRight size={14} /></Link><Link href="/validation" className="generator-nav-link">Data validation <ArrowUpRight size={14} /></Link></>}</nav>
       </header>
 
       <div className="generator-content">
         <div className="generator-heading"><div><div className="generator-kicker"><FlaskConical size={14} /> SYNTHETIC OPERATIONS</div><h1>Synthetic Data Generator</h1><p>Build a reproducible, hospital-scoped operations dataset from your configured bed inventory.</p></div><span className={`generator-api-state ${apiOnline === true ? "is-online" : apiOnline === false ? "is-offline" : ""}`} role="status"><span />{apiOnline === true ? "Backend connected" : apiOnline === false ? "Backend unavailable" : "Checking backend"}</span></div>
 
         {error && <div className="generator-alert generator-alert-error" role="alert"><CircleAlert size={18} /><span>{error}</span></div>}
+        {guestMode && <div className="generator-alert generator-alert-info" role="status"><ShieldCheck size={18} /><span>Guest Mode · datasets are temporary and expire {guestExpiresAt ? new Date(guestExpiresAt).toLocaleString() : "within 24 hours"}. No registration is required.</span></div>}
         {success && <motion.section className="generator-completion" role="status" aria-labelledby="generation-success-title" initial={{ opacity: 0, y: 8, scale: 0.99 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.22 }}>
           <span className="generator-completion-icon"><Check size={23} /></span><div className="generator-completion-copy"><h2 id="generation-success-title">Dataset generated</h2><p>{success}</p></div>
-          <div className="generator-completion-actions">{completedRunId && <Link className="generator-button generator-button-primary" href={`/datasets/${completedRunId}`}>View dataset</Link>}<Link className="generator-button generator-button-secondary" href="/datasets">Dataset library</Link></div>
+          <div className="generator-completion-actions">{completedRunId && <Link className="generator-button generator-button-primary" href={guestMode ? guestDatasetPath(completedRunId) : `/datasets/${completedRunId}`}>View dataset and downloads</Link>}{!guestMode && <Link className="generator-button generator-button-secondary" href="/datasets">Dataset library</Link>}</div>
         </motion.section>}
         {loading && <div className="generator-loading"><LoaderCircle className="generator-spin" size={22} /> Connecting to your workspace…</div>}
-        {!loading && workspaces.length === 0 && <div className="generator-empty"><Building2Icon /><h2>No workspace found</h2><p>Create a workspace and configure an active hospital with departments and operational beds first.</p><Link className="generator-button generator-button-primary" href="/hospitals">Open Hospital Studio <ArrowUpRight size={16} /></Link></div>}
+        {!loading && workspaces.length === 0 && <div className="generator-empty"><Building2Icon /><h2>{guestMode ? "No shared hospitals are available" : "No workspace found"}</h2><p>{guestMode ? "Guest generation is available when an administrator publishes an active hospital to a shared workspace." : "Create a workspace and configure an active hospital with departments and operational beds first."}</p>{!guestMode && <Link className="generator-button generator-button-primary" href="/hospitals">Open Hospital Studio <ArrowUpRight size={16} /></Link>}</div>}
         {!loading && workspaces.length > 0 && <>
           {!selectedHospital && !loadingHospitals && <div className="generator-empty"><Building2Icon /><h2>No active hospitals configured</h2><p>Generation requires a hospital, at least one active department, and operational beds.</p><Link className="generator-button generator-button-primary" href="/hospitals">Configure a hospital <ArrowUpRight size={16} /></Link></div>}
           <div className="generator-grid">
@@ -510,11 +518,11 @@ export default function SyntheticDataGeneratorPage() {
             </aside>
           </div>
 
-          <section className="generator-card generator-history" aria-labelledby="history-heading">
+          {!guestMode && <section className="generator-card generator-history" aria-labelledby="history-heading">
             <div className="generator-card-header"><span className="generator-section-icon"><Activity size={18} /></span><div><h2 id="history-heading">Generation history</h2><p>Completed and failed runs stored for this hospital.</p></div><button type="button" className="generator-refresh" onClick={() => selectedHospital && void loadHistory(selectedHospital)} disabled={!selectedHospital} aria-label="Refresh generation history"><RefreshCw size={16} /></button></div>
             {historyError && <p className="generator-inline-error" role="alert">{historyError}</p>}
             {history.length === 0 ? <div className="generator-history-empty">{historyError ? "History could not be loaded." : "No generation runs are recorded for this hospital yet."}</div> : <div className="generator-table-wrap"><table className="generator-history-table"><thead><tr><th>Run</th><th>Scenario</th><th>Started</th><th>Status</th><th>Patients</th><th>Admissions</th><th>Discharges</th><th>Transfers</th><th>Snapshots</th></tr></thead><tbody>{history.map((run) => <tr key={run.run_id}><td className="generator-run-id" title={run.run_id}>{run.run_id.slice(0, 8)}</td><td>{scenarios.find((scenario) => scenario.id === (run.config.request as { scenario?: string } | undefined)?.scenario)?.name ?? "Normal Operations"}</td><td>{new Date(run.started_at).toLocaleString()}</td><td><span className={`generator-status generator-status-${run.status}`}>{run.status}</span>{run.error_message && <small className="generator-run-error">{run.error_message}</small>}</td><td>{run.patients_count}</td><td>{run.admissions_count}</td><td>{run.discharges_count}</td><td>{run.transfers_count}</td><td>{run.snapshots_count}</td></tr>)}</tbody></table></div>}
-          </section>
+          </section>}
         </>}
       </div>
 

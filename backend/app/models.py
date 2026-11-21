@@ -79,6 +79,17 @@ class UserSession(Base):
     user: Mapped[User] = relationship(back_populates="sessions")
 
 
+class GuestSession(Base):
+    """Temporary anonymous capability; only a hash of its cookie token is stored."""
+    __tablename__ = "guest_sessions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    generation_runs: Mapped[list["GenerationRun"]] = relationship(back_populates="guest_session", passive_deletes=True)
+
+
 class Department(Base):
     __tablename__ = "departments"
     __table_args__ = (
@@ -125,6 +136,7 @@ class GenerationRun(Base):
     workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id", ondelete="RESTRICT"), nullable=False, index=True)
     hospital_id: Mapped[int] = mapped_column(ForeignKey("hospitals.id", ondelete="RESTRICT"), nullable=False, index=True)
     owner_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    guest_session_id: Mapped[int | None] = mapped_column(ForeignKey("guest_sessions.id", ondelete="CASCADE"), nullable=True, index=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     idempotency_key: Mapped[str] = mapped_column(String(36), nullable=False)
     config: Mapped[dict] = mapped_column(JSON, nullable=False)
@@ -145,6 +157,7 @@ class GenerationRun(Base):
     occupancy_snapshots: Mapped[list["OccupancySnapshot"]] = relationship(back_populates="run")
     validation_reports: Mapped[list["ValidationReport"]] = relationship(back_populates="run")
     owner: Mapped[User | None] = relationship(back_populates="generation_runs")
+    guest_session: Mapped[GuestSession | None] = relationship(back_populates="generation_runs")
 
 
 class SyntheticPatient(Base):

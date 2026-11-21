@@ -70,6 +70,7 @@ def initialize_database() -> None:
                 "waiting_queue_count": "INTEGER",
                 "bed_turnaround_count": "INTEGER",
                 "owner_user_id": "INTEGER REFERENCES users(id) ON DELETE SET NULL",
+                "guest_session_id": "INTEGER REFERENCES guest_sessions(id) ON DELETE CASCADE",
                 "deleted_at": "DATETIME",
             },
         }
@@ -103,4 +104,5 @@ def initialize_database() -> None:
             )
             connection.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_generation_runs_owner_user_id ON generation_runs (owner_user_id)")
             connection.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_generation_runs_deleted_at ON generation_runs (deleted_at)")
+            connection.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_generation_runs_guest_session_id ON generation_runs (guest_session_id)")
             connection.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_workspaces_is_shared ON workspaces (is_shared)")

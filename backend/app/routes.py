@@ -443,7 +443,7 @@ def list_generation_runs(
     if db.get(Workspace, workspace_id) is None:
         raise HTTPException(status_code=404, detail="Workspace not found.")
     query = select(GenerationRun).where(GenerationRun.workspace_id == workspace_id)
-    query = query.where(GenerationRun.deleted_at.is_(None))
+    query = query.where(GenerationRun.deleted_at.is_(None), GenerationRun.guest_session_id.is_(None))
     if user.role != "admin":
         query = query.where(GenerationRun.owner_user_id == user.id)
     if hospital_id is not None:
