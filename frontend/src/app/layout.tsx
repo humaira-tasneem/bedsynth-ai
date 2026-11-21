@@ -1,10 +1,11 @@
 import type { Metadata } from "next";
 import AppShell from "@/components/AppShell";
 import "./globals.css";
+import "./landing.css";
 
 export const metadata: Metadata = {
   title: "BedSynth AI | Hospital Operations Studio",
-  description: "A workspace for synthetic hospital operations data workflows.",
+  description: "Generate reproducible synthetic hospital operations datasets for research, analytics, simulation, and optimization testing without real patient records.",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
