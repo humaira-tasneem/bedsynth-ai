@@ -106,12 +106,22 @@ export default function AnalyticsPage() {
   const [filterError, setFilterError] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
   const [dark, setDark] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
   const selectedHospital = useMemo(() => hospitals.find((hospital) => String(hospital.id) === hospitalId), [hospitals, hospitalId]);
 
   useEffect(() => {
     const saved = window.localStorage.getItem("bedsynth-theme");
     const useDark = saved ? saved === "dark" : window.matchMedia("(prefers-color-scheme: dark)").matches;
     setDark(useDark); document.documentElement.dataset.theme = useDark ? "dark" : "light";
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    fetch(`${apiBase}/api/v1/auth/me`, { credentials: "include", cache: "no-store" })
+      .then((response) => response.ok ? response.json() : null)
+      .then((identity) => { if (active) setIsAdmin(identity?.role === "admin"); })
+      .catch(() => { if (active) setIsAdmin(false); });
+    return () => { active = false; };
   }, []);
 
   useEffect(() => {
@@ -251,7 +261,8 @@ export default function AnalyticsPage() {
     </header>
 
     <div className="analytics-content">
-      <div className="analytics-heading"><div><span className="generator-kicker"><BarChart3 size={14} /> HOSPITAL PERFORMANCE</span><h1>Analytics</h1><p>Explore occupancy, patient flow, and department utilization from persisted synthetic operations records.</p></div><button type="button" className="generator-button generator-button-secondary" onClick={() => setRefreshKey((key) => key + 1)} disabled={loading || loadingHospitals}><RefreshCw size={15} className={loading ? "generator-spin" : ""} /> Refresh</button></div>
+      <div className="analytics-heading"><div><span className="generator-kicker"><BarChart3 size={14} /> {isAdmin ? "PLATFORM ANALYTICS" : "HOSPITAL PERFORMANCE"}</span><h1>{isAdmin ? "Platform Analytics" : "My Analytics"}</h1><p>Explore occupancy, patient flow, and department utilization from persisted synthetic operations records.</p></div><button type="button" className="generator-button generator-button-secondary" onClick={() => setRefreshKey((key) => key + 1)} disabled={loading || loadingHospitals}><RefreshCw size={15} className={loading ? "generator-spin" : ""} /> Refresh</button></div>
+      {isAdmin && <p className="analytics-scope-note" role="note">Platform overview counts are available on Admin Dashboard. Charts and comparisons here are scoped to one selected hospital at a time; hospitals are not pooled together.</p>}
 
       <section className="generator-card analytics-filters" aria-label="Analytics filters">
         <label><span><Building2 size={14} /> Hospital</span><select value={hospitalId} onChange={(event) => changeHospital(event.target.value)} disabled={loadingHospitals || !hospitals.length}><option value="">Select a hospital</option>{hospitals.map((hospital) => <option key={hospital.id} value={hospital.id}>{hospital.name}</option>)}</select></label>

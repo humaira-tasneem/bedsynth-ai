@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { motion } from "framer-motion";
 import { Activity, ArrowRight, BarChart3, Building2, Database, LoaderCircle, UserRoundCog, Users } from "lucide-react";
 
 const apiBase = (process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
@@ -35,7 +36,7 @@ export default function AdminDashboard() {
     <div className="dashboard-welcome-row"><div className="page-heading"><div><div className="page-kicker"><span className="kicker-line" /> PLATFORM ADMINISTRATION</div><h1>Admin Dashboard</h1><p className="page-subtitle">Monitor shared hospital configuration, accounts, and synthetic generation activity.</p></div></div><Link href="/admin/datasets" className="button button-primary dashboard-primary-action"><Database size={17} /> Review all datasets <ArrowRight size={16} /></Link></div>
     {error && <div className="generator-alert generator-alert-error" role="alert">{error} <button type="button" onClick={() => window.location.reload()}>Retry</button></div>}
     {loading && <div className="generator-loading" role="status"><LoaderCircle className="generator-spin" size={18} /> Loading platform summary…</div>}
-    <section className="section-block" aria-label="Platform metrics"><div className="admin-metric-grid">{metrics.map(({ label, value, detail, icon: Icon, tone }, index) => <article className="metric-card" key={label} style={{ animationDelay: `${index * 45}ms` }}><div className="metric-top"><span className={`metric-icon ${tone}`}><Icon size={18} /></span><span className="metric-label">{label}</span></div><div className="metric-empty">{loading ? "…" : value ?? 0}</div><p className="metric-foot">{detail}</p></article>)}</div></section>
+    <section className="section-block" aria-label="Platform metrics"><div className="admin-metric-grid">{metrics.map(({ label, value, detail, icon: Icon, tone }, index) => <motion.article className="metric-card" key={label} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.24, delay: index * 0.045 }}><div className="metric-top"><span className={`metric-icon ${tone}`}><Icon size={18} /></span><span className="metric-label">{label}</span></div><div className="metric-empty">{loading ? "…" : value ?? 0}</div><p className="metric-foot">{detail}</p></motion.article>)}</div></section>
     <section className="admin-quick-actions" aria-label="Platform management shortcuts">
       <Link href="/users" className="dashboard-shortcut"><span className="metric-icon metric-icon-violet"><UserRoundCog size={19} /></span><span><strong>Manage users</strong><small>Review accounts and workspace sharing.</small></span><ArrowRight size={16} /></Link>
       <Link href="/hospitals" className="dashboard-shortcut"><span className="metric-icon metric-icon-blue"><Building2 size={19} /></span><span><strong>Manage hospitals</strong><small>Configure shared hospitals, departments, and beds.</small></span><ArrowRight size={16} /></Link>

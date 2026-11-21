@@ -14,7 +14,14 @@ export default function LoginPage() {
     const form = new FormData(event.currentTarget);
     try {
       const response = await fetch(`${apiBase}/api/v1/auth/login`, { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: form.get("email"), password: form.get("password") }) });
-      if (!response.ok) throw new Error(response.status === 401 ? "Email or password is incorrect." : "Sign in could not be completed.");
+      if (!response.ok) {
+        if (response.status === 401) throw new Error("Email or password is incorrect.");
+        if (response.status === 429) {
+          const retry = Number(response.headers.get("Retry-After"));
+          throw new Error(retry > 0 ? `Too many sign-in attempts. Try again in about ${Math.ceil(retry / 60)} minute(s).` : "Too many sign-in attempts. Try again later.");
+        }
+        throw new Error("Sign in could not be completed.");
+      }
       window.location.assign("/");
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Sign in could not be completed."); setBusy(false); }
   }

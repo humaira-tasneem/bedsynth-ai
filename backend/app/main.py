@@ -64,6 +64,20 @@ async def validate_browser_origin(request, call_next):
             return JSONResponse(status_code=403, content={"detail": "An allowed request origin is required."})
     return await call_next(request)
 
+
+@app.middleware("http")
+async def add_security_headers(request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    if request.url.path.startswith("/api/v1/"):
+        response.headers.setdefault("Cache-Control", "no-store")
+    if os.getenv("APP_ENV", "development").lower() == "production" and request.url.scheme == "https":
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return response
+
 app.include_router(auth_router)
 app.include_router(admin_router)
 app.include_router(dashboard_router)

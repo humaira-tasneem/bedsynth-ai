@@ -1,5 +1,6 @@
 """Authentication and administrative account/workspace endpoints."""
 
+import hashlib
 import os
 import re
 
@@ -15,9 +16,11 @@ from app.auth import (
 from app.database import get_db
 from app.models import User, UserSession, Workspace
 from app.schemas import LoginRequest, RegisterRequest, UserRead, UserUpdate, WorkspaceRead, WorkspaceSharingUpdate
+from app.security import login_limiter, registration_limiter
 
 router = APIRouter(prefix="/api/v1/auth", tags=["authentication"])
 admin_router = APIRouter(prefix="/api/v1/admin", tags=["administration"], dependencies=[Depends(admin_user)])
+_DUMMY_PASSWORD_HASH = hash_password("bedsynth-invalid-login-dummy")
 
 
 def _cookie_options() -> dict:
@@ -31,7 +34,12 @@ def _cookie_options() -> dict:
 
 
 @router.post("/register", response_model=UserRead, status_code=201)
-def register(payload: RegisterRequest, response: Response, db: Session = Depends(get_db)) -> User:
+def register(payload: RegisterRequest, request: Request, response: Response, db: Session = Depends(get_db)) -> User:
+    client_ip = request.client.host if request.client else "unknown"
+    retry = registration_limiter.retry_after(client_ip, limit=30, window_seconds=3600)
+    if retry is not None:
+        raise HTTPException(status_code=429, detail="Account creation is temporarily rate-limited. Try again later.", headers={"Retry-After": str(retry)})
+    registration_limiter.record(client_ip)
     email = normalize_email(payload.email)
     if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email) or len(email) > 254:
         raise HTTPException(status_code=422, detail="Enter a valid email address.")
@@ -51,11 +59,25 @@ def register(payload: RegisterRequest, response: Response, db: Session = Depends
 
 
 @router.post("/login", response_model=UserRead)
-def login(payload: LoginRequest, response: Response, db: Session = Depends(get_db)) -> User:
+def login(payload: LoginRequest, request: Request, response: Response, db: Session = Depends(get_db)) -> User:
     email = normalize_email(payload.email)
+    client_ip = request.client.host if request.client else "unknown"
+    account_key = hashlib.sha256(f"{client_ip}\x00{email}".encode("utf-8")).hexdigest()
+    for key, limit in ((account_key, 8), (f"ip:{client_ip}", 100)):
+        retry = login_limiter.retry_after(key, limit=limit, window_seconds=900)
+        if retry is not None:
+            raise HTTPException(status_code=429, detail="Too many sign-in attempts. Try again later.", headers={"Retry-After": str(retry)})
     user = db.scalar(select(User).where(func.lower(User.email) == email))
-    if user is None or not user.is_active or not verify_password(payload.password, user.password_hash):
+    password_valid = verify_password(payload.password, user.password_hash) if user is not None and user.is_active else False
+    if user is None or not user.is_active:
+        # Keep the common unknown/inactive-account path close to the password-hash path.
+        verify_password(payload.password, _DUMMY_PASSWORD_HASH)
+    if not password_valid:
+        login_limiter.record(account_key)
+        login_limiter.record(f"ip:{client_ip}")
         raise HTTPException(status_code=401, detail="Email or password is incorrect.")
+    login_limiter.clear(account_key)
+    login_limiter.clear(f"ip:{client_ip}")
     token = create_session(db, user)
     response.set_cookie(SESSION_COOKIE, token, **_cookie_options())
     return user

@@ -13,6 +13,7 @@ from app.database import Base, get_db
 from app.main import app
 from app.auth_routes import _cookie_options
 from app.models import GenerationRun, Hospital, User, UserSession, Workspace
+from app.security import InMemoryWindowLimiter
 
 
 @pytest.fixture
@@ -91,6 +92,44 @@ def test_duplicate_registration_casefolds_email_and_password_is_not_returned(aut
         assert user.password_hash != body["password"]
 
 
+def test_registration_cannot_assign_an_administrator_role(auth_client: TestClient) -> None:
+    response = auth_client.post("/api/v1/auth/register", json={
+        "email": "untrusted-role@example.test", "password": "long-password-456", "role": "admin",
+    })
+    assert response.status_code == 201
+    assert response.json()["role"] == "user"
+
+
+def test_login_rate_limit_returns_retry_after_without_account_disclosure(auth_client: TestClient) -> None:
+    email = "rate-limited-unique@example.test"
+    for _ in range(8):
+        response = auth_client.post("/api/v1/auth/login", json={"email": email, "password": "wrong-password"})
+        assert response.status_code == 401
+        assert response.json()["detail"] == "Email or password is incorrect."
+    limited = auth_client.post("/api/v1/auth/login", json={"email": email, "password": "wrong-password"})
+    assert limited.status_code == 429
+    assert int(limited.headers["retry-after"]) > 0
+
+
+def test_registration_window_limiter_rejects_excess_and_can_reset() -> None:
+    limiter = InMemoryWindowLimiter()
+    key = "test-client"
+    assert limiter.retry_after(key, limit=2, window_seconds=60) is None
+    limiter.record(key); limiter.record(key)
+    assert (limiter.retry_after(key, limit=2, window_seconds=60) or 0) > 0
+    limiter.reset()
+    assert limiter.retry_after(key, limit=2, window_seconds=60) is None
+
+
+def test_security_headers_are_added_and_api_responses_are_not_cached(auth_client: TestClient) -> None:
+    response = auth_client.get("/health")
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["x-frame-options"] == "DENY"
+    assert response.headers["referrer-policy"] == "strict-origin-when-cross-origin"
+    private_api = auth_client.get("/api/v1/auth/me")
+    assert private_api.headers["cache-control"] == "no-store"
+
+
 def test_generic_login_failure_and_logout_revokes_session(auth_client: TestClient) -> None:
     make_admin(auth_client)
     wrong = login(auth_client, password="wrong-password")
@@ -126,8 +165,9 @@ def test_non_admin_cannot_call_admin_routes_and_last_admin_is_protected(auth_cli
     assert auth_client.patch("/api/v1/admin/users/1", json={"role": "user"}).status_code == 409
     assert auth_client.patch("/api/v1/admin/users/1", json={"is_active": False}).status_code == 409
     auth_client.post("/api/v1/auth/logout", headers={"Origin": "http://localhost:3000"})
-    auth_client.post("/api/v1/auth/register", json={"email": "ordinary@example.test", "password": "long-password-789"}, headers={"Origin": "http://localhost:3000"})
+    ordinary = auth_client.post("/api/v1/auth/register", json={"email": "ordinary@example.test", "password": "long-password-789"}, headers={"Origin": "http://localhost:3000"})
     assert auth_client.get("/api/v1/admin/users").status_code == 403
+    assert auth_client.patch(f"/api/v1/admin/users/{ordinary.json()['id']}", json={"role": "admin"}).status_code == 403
 
 
 def test_deactivation_invalidates_existing_session(auth_client: TestClient) -> None:
@@ -163,6 +203,9 @@ def test_foreign_and_historical_runs_are_not_exposed_to_user(auth_client: TestCl
     auth_client.post("/api/v1/auth/login", json={"email": other_email, "password": "long-password-def"}, headers={"Origin": "http://localhost:3000"})
     assert auth_client.get("/api/v1/generation-runs/owned-run/dataset").status_code == 404
     assert auth_client.get("/api/v1/generation-runs/legacy-run/dataset").status_code == 404
+    assert auth_client.get("/api/v1/generation-runs/owned-run/dataset/export/patients").status_code == 404
+    assert auth_client.get("/api/v1/generation-runs/legacy-run/dataset/manifest").status_code == 404
+    assert auth_client.get("/api/v1/analytics/hospitals/1/runs").json()["items"] == []
 
 
 def test_cross_origin_cookie_mutation_is_rejected(auth_client: TestClient) -> None:

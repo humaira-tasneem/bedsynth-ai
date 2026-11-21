@@ -35,6 +35,8 @@ All routes use `/api/v1`:
 - `POST /auth/register`, `POST /auth/login`, `POST /auth/logout`, `GET /auth/me`
 - `GET/PATCH /admin/users` and `/admin/users/{user_id}` (administrator only)
 - `GET /admin/workspaces` and `PATCH /admin/workspaces/{workspace_id}/sharing` (administrator only)
+- `GET /dashboard/user` (authenticated user's own shared-workspace runs only)
+- `GET /admin/dashboard` and `GET /admin/datasets` (administrator only; platform-wide)
 - `DELETE /generation-runs/{run_id}/dataset` (soft-delete an owned run; administrators may manage all runs)
 
 The client sends cookie credentials on API calls. The public `/health` endpoint remains independent of account authentication.
@@ -80,7 +82,7 @@ Synthetic generation is deterministic and single-hospital per run. Preview accep
 
 ### Dataset library and exports
 
-The read-only Dataset Manager lists generation runs within one workspace and supports hospital/status filters, hospital or run-ID search, start-time ordering, and pagination. Run details return persisted configuration, per-entity row counts, selected departments, validation reports, and occupancy summary metrics derived from that run's persisted snapshots. Dataset preview and export endpoints scope every query by run, workspace, and hospital; previews are paginated and CSV responses stream one entity at a time. The six CSV entity names are `patients`, `admissions`, `discharges`, `bed_assignments`, `bed_transfers`, and `occupancy_snapshots`. CSV headers and column order remain stable; null values are blank. The versioned JSON manifest (currently schema `1.2.0`) includes the recorded LOS profile and states that a missing historical discharge is not inferred as an ongoing stay unless the run metadata/records support that interpretation. It contains counts, validation summaries, and available version fields and reports reproducibility as false if the run is incomplete or lacks a recorded generator or dataset schema version. ZIP bundles and cross-workspace dataset views are not provided.
+The user Dataset Manager lists runs owned by the authenticated user in a selected shared workspace and supports hospital/status filters, hospital or run-ID search, start-time ordering, and pagination. The administrator All Datasets endpoint searches across workspaces and includes owner details where recorded; historical unowned runs report an unavailable owner. Soft-deleted runs are omitted by default and can be included explicitly in the admin list. Run details return persisted configuration, per-entity row counts, selected departments, validation reports, and occupancy summary metrics derived from that run's persisted snapshots. Dataset preview and export endpoints scope every query by run, workspace, and hospital; previews are paginated and CSV responses stream one entity at a time. CSV exports include `patients`, `admissions`, `discharges`, `bed_assignments`, `bed_transfers`, `occupancy_snapshots`, `waiting_queue`, `bed_turnaround`, and the generation-scoped `bed_inventory` snapshot where available. CSV headers and column order are versioned; null values are blank. The versioned JSON manifest currently uses schema `1.3.0` and describes generator/run versions, seed, scenario and configuration when persisted, hospital/department scope, exported file descriptions and counts, UTC timestamp convention, joins, and unavailable historical metadata. It reports reproducibility as false if the run is incomplete or lacks a recorded generator or dataset schema version. ZIP bundles are not provided.
 
 ### Analytics semantics and current limitations
 
@@ -100,6 +102,10 @@ The insights endpoint returns deterministic rule-based observations computed onl
 |---|---|---|
 | `DATABASE_URL` | `sqlite:///./bedsynth.db` | SQLAlchemy database URL; relative SQLite paths resolve from the backend working directory. |
 | `FRONTEND_ORIGIN` | `http://localhost:3000` | Exact origin allowed by browser CORS. |
+| `FRONTEND_ORIGINS` | Unset; falls back to `FRONTEND_ORIGIN` | Comma-separated exact browser origins for CORS and unsafe-request origin checks. |
+| `APP_ENV` | `development` | Set to `production` to require secure cookie defaults and enable HSTS on HTTPS responses. |
+| `SESSION_COOKIE_SAMESITE` | `lax` | Cookie SameSite mode; use `none` only with HTTPS and secure cookies for cross-site hosting. |
+| `SESSION_COOKIE_SECURE` | Derived from app environment/SameSite | Explicit secure-cookie control; production and SameSite=None force secure cookies. |
 | `GEMINI_API_KEY` | unset | Backend-only Google Gemini Developer API credential; assistant returns a configuration error when unset. |
 | `GEMINI_MODEL` | `gemini-3.8-flash` | Gemini model identifier used by the assistant. |
 | `GROQ_API_KEY` | unset | Optional backend-only Groq credential; Groq is attempted once as a secondary provider after Gemini fails or is not configured. |
@@ -107,13 +113,15 @@ The insights endpoint returns deterministic rule-based observations computed onl
 
 ### Authentication and access control
 
-The application now uses account authentication with `admin` and `user` roles. New registrations receive the standard `user` role; there is no client-side administrator promotion. Bootstrap the first administrator from the backend directory with an interactive CLI (credentials are entered through prompts and are never supplied as a default):
+The application now uses account authentication with `admin` and `user` roles. New registrations receive the standard `user` role; extra role fields in registration are ignored, and there is no client-side administrator promotion. Passwords must be 12 to 128 characters. Bootstrap the first administrator from the backend directory with an interactive CLI (credentials are entered through prompts and are never supplied as a default):
 
 ```powershell
 .\.venv313\Scripts\python.exe -m app.auth_cli create-admin
 ```
 
 Then sign in at `/login`. Accounts use scrypt password hashes. Login creates an opaque random session token in an HTTP-only cookie; only its SHA-256 hash is stored in SQLite. The API does not return password hashes or session tokens. Sessions expire after 14 days and are revoked on logout or account deactivation. No credentials are stored in browser local storage.
+
+Login failures are limited to 8 per account/IP pair and 100 per IP in a rolling 15-minute window. Registration is limited to 30 requests per IP per hour. These lightweight limits are process-local, reset on restart, and are not shared by multiple workers; use a trusted reverse-proxy or edge rate limiter for a multi-worker public deployment. Client IPs are taken from the direct ASGI connection, not blindly trusted forwarding headers. The API adds `nosniff`, frame, referrer, and permissions headers; API responses use `Cache-Control: no-store`. HSTS is returned only for production HTTPS requests. The Next.js frontend applies corresponding browser security headers.
 
 An administrator can share an existing workspace from **Settings → Shared workspace access**, or use the explicit CLI command:
 
@@ -124,6 +132,8 @@ An administrator can share an existing workspace from **Settings → Shared work
 Existing workspaces default to private during the additive migration. Standard users see only shared workspaces and active hospitals within them, can generate datasets, and can access, export, compare, validate, or soft-delete only runs they own. Historical runs without an owner remain available to administrators and are never assigned to a user automatically. Administrators manage hospitals, departments, beds, users, workspace sharing, and can review all runs. Backend checks enforce these rules; hiding controls in the frontend is not the access boundary.
 
 Cookie settings are controlled by `APP_ENV`, `SESSION_COOKIE_SAMESITE`, and `SESSION_COOKIE_SECURE`. Local development defaults to `SameSite=Lax` and insecure cookies for localhost HTTP. For a cross-site hosted frontend/backend, configure `SESSION_COOKIE_SAMESITE=none` and `SESSION_COOKIE_SECURE=true` and set `FRONTEND_ORIGINS` to the exact permitted browser origins (comma-separated). Never use wildcard CORS origins with credentials. Unsafe API requests enforce the configured Origin allowlist; credentialed unsafe requests without an Origin are rejected.
+
+`GET /dashboard/user` returns counts and recent activity for completed, non-deleted runs owned by the current user in shared workspaces. It derives latest available occupancy from that user's latest completed run with snapshots. `GET /admin/dashboard` aggregates platform counts; generated row totals come from completed, non-deleted persisted runs and exclude the separate bed-inventory snapshot. `GET /admin/datasets` supports paginated platform search and ownership/status filters. These endpoints require an authenticated session, with administrator checks enforced server-side.
 
 Authentication tables are created additively. SQLite receives nullable `generation_runs.owner_user_id` and `deleted_at` columns and a default-private `workspaces.is_shared` column. Existing generation runs retain a null owner; no run is migrated to a new account. Soft deletion sets `deleted_at` and keeps all operational records. Use a database backup under your normal operational backup procedure before deploying schema changes.
 

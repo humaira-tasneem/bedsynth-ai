@@ -386,9 +386,8 @@ button:focus-visible { outline: 3px solid var(--cyan); outline-offset: 3px; }
 
 .admin-metric-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 16px; }
 .metric-icon-purple { color: #7354a8; background: #f0eafb; }
-.admin-metric-grid .metric-card { animation: admin-card-in .35s both ease-out; }
-@keyframes admin-card-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 .admin-quick-actions { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 14px; margin: 20px 0; }
+.analytics-scope-note { margin: -8px 0 18px; padding: 12px 14px; border: 1px solid color-mix(in srgb,var(--blue) 26%,var(--border)); border-radius: 10px; color: var(--text-secondary); background: color-mix(in srgb,var(--blue-soft) 48%,var(--surface)); }
 .admin-dataset-filters { grid-template-columns: minmax(240px,2fr) minmax(150px,1fr) minmax(165px,1fr) auto; align-items: end; }
 .admin-deleted-toggle { display: flex!important; min-height: 42px; align-items: center; gap: 8px!important; color: var(--text-secondary); font-size: 13px!important; }
 .admin-deleted-toggle input { accent-color: var(--primary); }
