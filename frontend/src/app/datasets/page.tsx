@@ -34,6 +34,9 @@ export default function DatasetsPage() {
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
   const [library, setLibrary] = useState<Library | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [deleteTarget, setDeleteTarget] = useState<Dataset | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const [loadingWorkspaces, setLoadingWorkspaces] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -75,10 +78,21 @@ export default function DatasetsPage() {
     }
     void load();
     return () => controller.abort();
-  }, [workspaceId, hospitalId, status, sort, query, page]);
+  }, [workspaceId, hospitalId, status, sort, query, page, reloadKey]);
 
   function applySearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setPage(1); setQuery(search.trim());
+  }
+
+  async function confirmDelete() {
+    if (!deleteTarget) return;
+    setDeleting(true); setError("");
+    try {
+      const response = await fetch(`${apiBase}/api/v1/generation-runs/${deleteTarget.run_id}/dataset`, { method: "DELETE", credentials: "include" });
+      if (!response.ok) throw new Error("Dataset could not be removed from your normal views.");
+      setDeleteTarget(null); setReloadKey((value) => value + 1);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Dataset could not be removed."); }
+    finally { setDeleting(false); }
   }
 
   const countLabel = useMemo(() => library ? `${library.total} dataset${library.total === 1 ? "" : "s"}` : "Datasets", [library]);
@@ -109,11 +123,12 @@ export default function DatasetsPage() {
                 <div className="dataset-run-meta"><strong>{item.record_counts.patients.toLocaleString()} patients</strong><span>{item.record_counts.admissions.toLocaleString()} admissions</span></div>
                 <span className={`generator-status generator-status-${item.status}`}>{item.status}</span>
                 <span className="dataset-run-validation">{item.latest_validation ? `Validation ${item.latest_validation.score.toFixed(0)} | ${item.latest_validation.status.replaceAll('_', ' ')}` : 'Not validated'}</span>
-                <Link href={'/datasets/' + item.run_id} className="generator-button generator-button-secondary">View details <ArrowUpRight size={14} /></Link>
+                <div className="dataset-card-actions"><Link href={'/datasets/' + item.run_id} className="generator-button generator-button-secondary">View details <ArrowUpRight size={14} /></Link><Link href="/analytics" className="generator-button generator-button-secondary">Compare runs</Link><details className="dataset-export-menu"><summary>CSV exports</summary><div>{([['patients','Patients',item.record_counts.patients],['admissions','Admissions',item.record_counts.admissions],['discharges','Discharges',item.record_counts.discharges],['bed_assignments','Bed assignments',item.record_counts.bed_assignments],['bed_transfers','Transfers',item.record_counts.bed_transfers],['occupancy_snapshots','Occupancy',item.record_counts.occupancy_snapshots]] as const).filter(([, ,count]) => (count ?? 0) > 0).map(([entity,label]) => <a key={entity} href={`${apiBase}/api/v1/generation-runs/${item.run_id}/dataset/export/${entity}`}>{label} CSV</a>)}</div></details><button type="button" className="generator-button generator-button-secondary dataset-delete-action" onClick={() => setDeleteTarget(item)}>Delete</button></div>
               </article>)}</div>
               <div className="dataset-pagination"><span>Page {library.page} of {library.pages || 1} · {library.total} total</span><div><button type="button" onClick={() => setPage((value) => Math.max(1, value - 1))} disabled={page <= 1}>Previous</button><button type="button" onClick={() => setPage((value) => Math.min(library.pages, value + 1))} disabled={page >= library.pages}>Next</button></div></div></>}
         </section>}
       <footer className="dataset-footer"><span>Only persisted synthetic records are listed and exported.</span><span><Activity size={13} /> Workspace-scoped data access</span></footer>
+      {deleteTarget && <div className="dataset-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !deleting) setDeleteTarget(null); }}><section className="dataset-delete-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-dataset-title" aria-describedby="delete-dataset-description"><h2 id="delete-dataset-title">Remove this dataset from your views?</h2><p id="delete-dataset-description">Run {deleteTarget.run_id.slice(0, 8)} will be soft-deleted and hidden from your normal dataset and analytics views. Its stored synthetic records are retained.</p><div><button type="button" className="generator-button generator-button-secondary" onClick={() => setDeleteTarget(null)} disabled={deleting}>Cancel</button><button type="button" className="generator-button generator-button-danger" onClick={() => void confirmDelete()} disabled={deleting}>{deleting ? "Removing…" : "Remove dataset"}</button></div></section></div>}
     </div>
   </main>;
 }

@@ -6,6 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "test:assistant-status": "node --test src/lib/assistant-status.test.mjs",
+    "test:role-routing": "node --test src/lib/role-routing.test.mjs",
     "start": "next start"
   },
   "dependencies": {

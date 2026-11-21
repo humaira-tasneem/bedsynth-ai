@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AnimatePresence, MotionConfig, motion } from "framer-motion";
 import { backendHealthLabel } from "@/lib/assistant-status.mjs";
+import { landingPathForRole, restrictedDestination } from "@/lib/role-routing.mjs";
 import {
   Activity, BarChart3, Building2, ChevronDown, Database, LogOut, UserRoundCog,
   FlaskConical, LayoutDashboard, Menu, Moon, PanelLeftClose,
@@ -14,28 +15,18 @@ import {
 
 const apiBase = (process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
 const adminNavigationGroups = [
-  { label: "WORKSPACE", items: [
-    { href: "/", label: "Dashboard", icon: LayoutDashboard },
-    { href: "/hospitals", label: "Hospital Setup", icon: Building2 },
-  ] },
-  { label: "DATA GENERATION", items: [
-    { href: "/generate", label: "Generate Dataset", icon: FlaskConical },
+  { label: "PLATFORM", items: [
+    { href: "/admin", label: "Admin Dashboard", icon: LayoutDashboard },
+    { href: "/hospitals", label: "Hospital Management", icon: Building2 },
+    { href: "/users", label: "User Management", icon: UserRoundCog },
+    { href: "/admin/datasets", label: "All Datasets", icon: Database },
+    { href: "/analytics", label: "Platform Analytics", icon: BarChart3 },
     { href: "/assistant", label: "AI Assistant", icon: Sparkles },
-  ] },
-  { label: "QUALITY & INSIGHTS", items: [
-    { href: "/analytics", label: "Analytics", icon: BarChart3 },
-    { href: "/datasets", label: "Datasets", icon: Database },
-    { href: "/validation", label: "Data validation", icon: ShieldCheck },
-  ] },
-  { label: "ADMINISTRATION", items: [{ href: "/users", label: "User Management", icon: UserRoundCog }] },
-  { label: "PREFERENCES", items: [
     { href: "/settings", label: "Settings", icon: Activity },
   ] },
 ];
 const userNavigationGroups = [
-  { label: "WORKSPACE", items: [{ href: "/", label: "Dashboard", icon: LayoutDashboard }, { href: "/hospitals", label: "Shared Hospitals", icon: Building2 }] },
-  { label: "DATA GENERATION", items: [{ href: "/generate", label: "Generate Dataset", icon: FlaskConical }, { href: "/assistant", label: "AI Assistant", icon: Sparkles }] },
-  { label: "MY DATA", items: [{ href: "/datasets", label: "My Datasets", icon: Database }, { href: "/analytics", label: "My Analytics", icon: BarChart3 }, { href: "/validation", label: "Data validation", icon: ShieldCheck }] },
+  { label: "RESEARCH", items: [{ href: "/", label: "Dashboard", icon: LayoutDashboard }, { href: "/generate", label: "Generate Dataset", icon: FlaskConical }, { href: "/datasets", label: "My Datasets", icon: Database }, { href: "/analytics", label: "My Analytics", icon: BarChart3 }, { href: "/assistant", label: "AI Assistant", icon: Sparkles }] },
   { label: "PREFERENCES", items: [{ href: "/settings", label: "Settings", icon: Activity }] },
 ];
 
@@ -59,18 +50,33 @@ export default function AppShell({ children }: Readonly<{ children: React.ReactN
 
   useEffect(() => {
     let active = true;
-    fetch(`${apiBase}/api/v1/auth/me`, { credentials: "include", cache: "no-store" })
-      .then((response) => response.ok ? response.json() : null)
-      .then((user) => { if (active) { setIdentity(user); setAuthChecked(true); } })
-      .catch(() => { if (active) { setIdentity(null); setAuthChecked(true); } });
-    return () => { active = false; };
+    const verifySession = async (initial = false) => {
+      try {
+        const response = await fetch(`${apiBase}/api/v1/auth/me`, { credentials: "include", cache: "no-store" });
+        if (response.ok) {
+          const user = await response.json();
+          if (active) { setIdentity(user); setAuthChecked(true); }
+        } else if (response.status === 401) {
+          if (active) { setIdentity(null); setAuthChecked(true); }
+        } else if (initial && active) setAuthChecked(true);
+      } catch {
+        if (initial && active) { setIdentity(null); setAuthChecked(true); }
+      }
+    };
+    void verifySession(true);
+    const timer = window.setInterval(() => void verifySession(), 30000);
+    return () => { active = false; window.clearInterval(timer); };
   }, [pathname]);
 
   useEffect(() => {
     if (!authChecked) return;
     if (!identity && !isAuthPage) router.replace("/login");
-    if (identity && isAuthPage) router.replace("/");
-    if (identity?.role === "user" && pathname === "/users") router.replace("/");
+    if (identity && isAuthPage) router.replace(landingPathForRole(identity.role));
+    if (identity) {
+      const restricted = restrictedDestination(identity.role, pathname);
+      if (restricted) router.replace(restricted);
+      else if (identity.role === "admin" && pathname === "/") router.replace("/admin");
+    }
   }, [authChecked, identity, isAuthPage, router]);
 
   useEffect(() => {
@@ -150,7 +156,9 @@ export default function AppShell({ children }: Readonly<{ children: React.ReactN
         {navigationGroups.map((group) => <div className="product-nav-group" key={group.label}>
           <span className="product-nav-label">{group.label}</span>
           {group.items.map(({ href, label, icon: Icon }) => {
-            const isActive = href === "/datasets" ? pathname.startsWith(href) : pathname === href;
+            const isActive = href === "/datasets" ? pathname.startsWith(href)
+              : href === "/admin/datasets" ? pathname === href || pathname.startsWith("/datasets/")
+                : pathname === href;
             return <Link key={href} href={href} className={`product-nav-link${isActive ? " is-active" : ""}`} aria-current={isActive ? "page" : undefined} aria-label={collapsed ? label : undefined} title={collapsed ? label : undefined}>
               <Icon size={18} strokeWidth={1.9} /><span>{label}</span>
             </Link>;

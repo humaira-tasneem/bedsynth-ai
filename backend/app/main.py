@@ -20,6 +20,7 @@ from app.analytics_routes import router as analytics_router
 from app.datasets_routes import router as datasets_router
 from app.assistant_routes import router as assistant_router
 from app.auth_routes import router as auth_router, admin_router
+from app.dashboard_routes import router as dashboard_router, admin_router as admin_dashboard_router
 from app.auth import FRONTEND_ORIGINS
 
 
@@ -65,6 +66,8 @@ async def validate_browser_origin(request, call_next):
 
 app.include_router(auth_router)
 app.include_router(admin_router)
+app.include_router(dashboard_router)
+app.include_router(admin_dashboard_router)
 app.include_router(hospital_studio_router)
 app.include_router(analytics_router)
 app.include_router(datasets_router)
