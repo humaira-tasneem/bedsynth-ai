@@ -337,7 +337,7 @@ def _set_department_names(assistant_client, departments, names):
 
 
 def test_local_fallback_all_active_departments_resolves_scoped_ids_and_preserves_workflow(assistant_client, monkeypatch):
-    workspace_id, hospital_id, departments = make_hospital(assistant_client, department_count=2, beds_per_department=2)
+    workspace_id, hospital_id, departments = make_hospital(assistant_client, department_count=2, beds_per_department=5)
     _set_department_names(assistant_client, departments, ["Cardiology", "Neurology"])
 
     other_hospital = assistant_client.post(

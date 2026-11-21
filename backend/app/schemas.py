@@ -300,6 +300,67 @@ class PatientProfileConfig(BaseModel):
         return self
 
 
+class AdmissionArrivalProfile(BaseModel):
+    planned_pct: int = Field(default=50, ge=0, le=100)
+    emergency_pct: int = Field(default=50, ge=0, le=100)
+    time_of_day: Literal["uniform", "daytime", "evening", "overnight"] = "uniform"
+    day_of_week: Literal["uniform", "weekdays", "weekends"] = "uniform"
+
+    @model_validator(mode="after")
+    def validate_type_total(self) -> "AdmissionArrivalProfile":
+        if self.planned_pct + self.emergency_pct != 100:
+            raise ValueError("Planned and emergency admission percentages must total exactly 100%.")
+        return self
+
+
+class DepartmentDemandWeight(BaseModel):
+    department_id: int = Field(gt=0)
+    weight: float = Field(gt=0, le=10)
+
+
+class LengthOfStayProfile(BaseModel):
+    distribution: Literal["fixed", "triangular"] = "triangular"
+    minimum_days: float = Field(default=0.5, gt=0, le=366)
+    mode_days: float = Field(default=1.0, gt=0, le=366)
+    maximum_days: float = Field(default=2.0, gt=0, le=366)
+
+    @model_validator(mode="after")
+    def validate_stay_bounds(self) -> "LengthOfStayProfile":
+        if not self.minimum_days <= self.mode_days <= self.maximum_days:
+            raise ValueError("Length of stay must satisfy minimum_days <= mode_days <= maximum_days.")
+        if self.distribution == "fixed" and not (self.minimum_days == self.mode_days == self.maximum_days):
+            raise ValueError("Fixed length of stay requires minimum, mode, and maximum days to be equal.")
+        return self
+
+
+class DepartmentLengthOfStayProfile(LengthOfStayProfile):
+    department_id: int = Field(gt=0)
+
+
+class WaitingQueueConfig(BaseModel):
+    priority_policy: Literal["emergency_first", "planned_first", "arrival_order"] = "emergency_first"
+    maximum_wait_hours: float = Field(default=24, ge=0, le=720)
+
+
+class BedTurnaroundProfile(BaseModel):
+    distribution: Literal["fixed", "triangular"] = "fixed"
+    minimum_hours: float = Field(default=0.5, ge=0, le=168)
+    mode_hours: float = Field(default=0.5, ge=0, le=168)
+    maximum_hours: float = Field(default=0.5, ge=0, le=168)
+
+    @model_validator(mode="after")
+    def validate_turnaround_bounds(self) -> "BedTurnaroundProfile":
+        if not self.minimum_hours <= self.mode_hours <= self.maximum_hours:
+            raise ValueError("Turnaround duration must satisfy minimum_hours <= mode_hours <= maximum_hours.")
+        if self.distribution == "fixed" and not (self.minimum_hours == self.mode_hours == self.maximum_hours):
+            raise ValueError("Fixed turnaround requires minimum, mode, and maximum hours to be equal.")
+        return self
+
+
+class DepartmentBedTurnaroundProfile(BedTurnaroundProfile):
+    department_id: int = Field(gt=0)
+
+
 class GenerationConfig(BaseModel):
     start_date: date
     end_date: date
@@ -314,6 +375,13 @@ class GenerationConfig(BaseModel):
         "low_occupancy",
     ] = "normal_operations"
     patient_profile: PatientProfileConfig = Field(default_factory=PatientProfileConfig)
+    arrival_profile: AdmissionArrivalProfile = Field(default_factory=AdmissionArrivalProfile)
+    department_demand_weights: list[DepartmentDemandWeight] = Field(default_factory=list)
+    length_of_stay_profile: LengthOfStayProfile = Field(default_factory=LengthOfStayProfile)
+    department_length_of_stay_profiles: list[DepartmentLengthOfStayProfile] = Field(default_factory=list)
+    waiting_queue: WaitingQueueConfig = Field(default_factory=WaitingQueueConfig)
+    bed_turnaround_profile: BedTurnaroundProfile = Field(default_factory=BedTurnaroundProfile)
+    department_bed_turnaround_profiles: list[DepartmentBedTurnaroundProfile] = Field(default_factory=list)
     department_ids: list[int] | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
@@ -328,6 +396,21 @@ class GenerationConfig(BaseModel):
             raise ValueError("Target occupancy must be above 0 when generating admissions.")
         if self.department_ids is not None and len(set(self.department_ids)) != len(self.department_ids):
             raise ValueError("Department selections must not contain duplicates.")
+        weight_ids = [entry.department_id for entry in self.department_demand_weights]
+        if len(set(weight_ids)) != len(weight_ids):
+            raise ValueError("Department demand weights must not contain duplicate department IDs.")
+        stay_profile_ids = [entry.department_id for entry in self.department_length_of_stay_profiles]
+        if len(set(stay_profile_ids)) != len(stay_profile_ids):
+            raise ValueError("Department length-of-stay profiles must not contain duplicate department IDs.")
+        turnaround_ids = [entry.department_id for entry in self.department_bed_turnaround_profiles]
+        if len(set(turnaround_ids)) != len(turnaround_ids):
+            raise ValueError("Department bed turnaround profiles must not contain duplicate department IDs.")
+        if self.department_ids is not None and any(department_id not in self.department_ids for department_id in weight_ids):
+            raise ValueError("Department demand weights must refer to selected departments.")
+        if self.department_ids is not None and any(department_id not in self.department_ids for department_id in stay_profile_ids):
+            raise ValueError("Department length-of-stay profiles must refer to selected departments.")
+        if self.department_ids is not None and any(department_id not in self.department_ids for department_id in turnaround_ids):
+            raise ValueError("Department bed turnaround profiles must refer to selected departments.")
         return self
 
 
@@ -354,6 +437,23 @@ class GenerationPreviewRead(BaseModel):
         "low_occupancy",
     ]
     patient_profile: PatientProfileConfig
+    arrival_profile: AdmissionArrivalProfile
+    length_of_stay_profile: LengthOfStayProfile
+    department_length_of_stay_profiles: list[DepartmentLengthOfStayProfile]
+    projected_discharges: int
+    projected_ongoing_admissions: int
+    projected_assigned_admissions: int = 0
+    projected_waiting_patients: int = 0
+    projected_max_wait_exceeded: int = 0
+    projected_unresolved_requests: int = 0
+    projected_average_wait_minutes: float = 0
+    projected_maximum_wait_minutes: float = 0
+    projected_turnaround_events: int = 0
+    projected_beds_cleaning_at_window_end: int = 0
+    waiting_queue: WaitingQueueConfig = Field(default_factory=WaitingQueueConfig)
+    bed_turnaround_profile: BedTurnaroundProfile = Field(default_factory=BedTurnaroundProfile)
+    department_bed_turnaround_profiles: list[DepartmentBedTurnaroundProfile] = Field(default_factory=list)
+    effective_admission_mix: dict[str, int]
     seed: int
     departments: list[GenerationPreviewDepartment]
     total_operational_beds: int
@@ -383,6 +483,8 @@ class GenerationRunRead(BaseModel):
     discharges_count: int
     transfers_count: int
     snapshots_count: int
+    waiting_queue_count: int | None = None
+    bed_turnaround_count: int | None = None
     error_message: str | None
 
 
@@ -648,6 +750,8 @@ class DatasetRecordCounts(BaseModel):
     bed_assignments: int = 0
     bed_transfers: int = 0
     occupancy_snapshots: int = 0
+    waiting_queue: int | None = None
+    bed_turnaround: int | None = None
 
 
 class DatasetValidationSummary(BaseModel):
@@ -674,6 +778,15 @@ class DatasetAnalyticsSummary(BaseModel):
     occupied_beds_latest: int | None
     available_beds_latest: int | None
     recorded_days: int
+    waiting_requests: int | None = None
+    assigned_immediately: int | None = None
+    patients_who_waited: int | None = None
+    unresolved_requests: int | None = None
+    average_wait_seconds: float | None = None
+    maximum_wait_seconds: int | None = None
+    turnaround_events: int | None = None
+    average_turnaround_seconds: float | None = None
+    turnaround_bed_hours: float | None = None
 
 
 class DatasetListItem(BaseModel):
@@ -716,7 +829,7 @@ class DatasetPreviewColumn(BaseModel):
 
 class DatasetPreviewRead(BaseModel):
     run_id: UUID
-    entity: Literal["patients", "admissions", "discharges", "bed_assignments", "bed_transfers", "occupancy_snapshots"]
+    entity: Literal["patients", "admissions", "discharges", "bed_assignments", "bed_transfers", "occupancy_snapshots", "waiting_queue", "bed_turnaround"]
     columns: list[DatasetPreviewColumn]
     items: list[dict]
     total: int

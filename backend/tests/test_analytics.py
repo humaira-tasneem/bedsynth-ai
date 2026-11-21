@@ -45,11 +45,12 @@ def analytics_client(tmp_path) -> Generator[TestClient, None, None]:
         engine.dispose()
 
 
-def create_run(client, *, beds_per_department=2, admissions=4, create_beds=True):
+def create_run(client, *, beds_per_department=2, admissions=4, create_beds=True, end_date="2025-01-03"):
     workspace_id, hospital_id, departments = make_hospital(
         client, department_count=2, beds_per_department=beds_per_department, create_beds=create_beds,
     )
     config = generation_config(departments, admissions=admissions, seed=17)
+    config["end_date"] = end_date
     run = preview_and_generate(client, hospital_id, config)
     return workspace_id, hospital_id, departments, run
 
@@ -67,7 +68,7 @@ def test_overview_uses_persisted_counts_and_latest_run(analytics_client):
     assert payload["metadata"]["start_date"] == "2025-01-01"
     assert payload["metrics"]["operational_beds"] == 4
     assert payload["metrics"]["admissions"] == run["admissions_count"] == 4
-    assert payload["metrics"]["discharges"] == run["discharges_count"] == 4
+    assert payload["metrics"]["discharges"] == run["discharges_count"]
     assert payload["metrics"]["transfers"] == run["transfers_count"]
     assert payload["metrics"]["occupancy_snapshots"] == run["snapshots_count"] == 6
     assert payload["metrics"]["latest_occupancy_pct"] is not None
@@ -304,7 +305,7 @@ def test_compare_rejects_cross_hospital_or_different_department_scope(analytics_
 
 
 def test_department_admission_distribution_and_transfer_activity_use_events(analytics_client):
-    _, hospital_id, _, run = create_run(analytics_client, admissions=8)
+    _, hospital_id, _, run = create_run(analytics_client, admissions=8, end_date="2025-01-14")
     response = endpoint(analytics_client, hospital_id, "departments")
     assert response.status_code == 200, response.text
     rows = response.json()["items"]
@@ -358,7 +359,9 @@ def test_comparison_handles_zero_baseline_and_period_filter_safely(analytics_cli
     assert changed["metrics_vs_baseline"]["patients"]["percentage_change"] is None
     assert baseline["average_occupancy_pct"] == 0
     assert changed["metrics_vs_baseline"]["average_occupancy_pct"]["percentage_change"] is None
-    assert changed["average_length_of_stay_hours"] is not None
+    # No completed discharge belongs to this selected period; ongoing stays do
+    # not receive an invented length-of-stay value.
+    assert changed["average_length_of_stay_hours"] is None
 
 
 def test_insights_returns_http_error_when_no_run_matches_filters(analytics_client):

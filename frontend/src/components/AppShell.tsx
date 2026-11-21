@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
+import { AnimatePresence, MotionConfig, motion } from "framer-motion";
 import { backendHealthLabel } from "@/lib/assistant-status.mjs";
 import {
   Activity, BarChart3, BedDouble, Building2, ChevronDown, Database,
@@ -13,17 +14,20 @@ import {
 const apiBase = (process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
 const navigationGroups = [
   { label: "WORKSPACE", items: [
-    { href: "/", label: "Overview", icon: LayoutDashboard },
-    { href: "/hospitals", label: "Hospital Studio", icon: Building2 },
+    { href: "/", label: "Dashboard", icon: LayoutDashboard },
+    { href: "/hospitals", label: "Hospital Setup", icon: Building2 },
   ] },
   { label: "DATA GENERATION", items: [
-    { href: "/generate", label: "Generator", icon: FlaskConical },
+    { href: "/generate", label: "Generate Dataset", icon: FlaskConical },
     { href: "/assistant", label: "AI Assistant", icon: Sparkles },
   ] },
   { label: "QUALITY & INSIGHTS", items: [
     { href: "/analytics", label: "Analytics", icon: BarChart3 },
     { href: "/datasets", label: "Datasets", icon: Database },
     { href: "/validation", label: "Data validation", icon: ShieldCheck },
+  ] },
+  { label: "PREFERENCES", items: [
+    { href: "/settings", label: "Settings", icon: Activity },
   ] },
 ];
 const navigation = navigationGroups.flatMap((group) => group.items);
@@ -46,6 +50,18 @@ export default function AppShell({ children }: Readonly<{ children: React.ReactN
     const useDark = savedTheme ? savedTheme === "dark" : window.matchMedia("(prefers-color-scheme: dark)").matches;
     setDark(useDark);
     document.documentElement.dataset.theme = useDark ? "dark" : "light";
+  }, []);
+
+  useEffect(() => {
+    const syncTheme = (event: Event) => {
+      const theme = (event as CustomEvent<"light" | "dark">).detail;
+      if (theme !== "light" && theme !== "dark") return;
+      setDark(theme === "dark");
+      document.documentElement.dataset.theme = theme;
+      window.localStorage.setItem("bedsynth-theme", theme);
+    };
+    window.addEventListener("bedsynth-theme-change", syncTheme);
+    return () => window.removeEventListener("bedsynth-theme-change", syncTheme);
   }, []);
 
   useEffect(() => { setMobileOpen(false); }, [pathname]);
@@ -116,7 +132,13 @@ export default function AppShell({ children }: Readonly<{ children: React.ReactN
         </div>
         <div className="product-topbar-actions"><div className={`product-health health-${health}`} role="status" aria-live="polite"><i />{backendHealthLabel(health)}</div><button type="button" className="product-icon-button product-theme" onClick={toggleTheme} aria-label={`Switch to ${dark ? "light" : "dark"} theme`} title={`Switch to ${dark ? "light" : "dark"} theme`}>{dark ? <Sun size={18} /> : <Moon size={18} />}</button></div>
       </header>
-      <div className="product-route-frame">{children}</div>
+      <MotionConfig reducedMotion="user">
+        <AnimatePresence mode="wait" initial={false}>
+          <motion.div key={pathname} className="product-route-frame" initial={{ opacity: 0, y: 7 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -3 }} transition={{ duration: 0.18, ease: "easeOut" }}>
+            {children}
+          </motion.div>
+        </AnimatePresence>
+      </MotionConfig>
     </div>
   </div>;
 }

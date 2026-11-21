@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.models import (
     Admission, BedAssignment, BedTransfer, Department, Discharge, GenerationRun,
-    Hospital, OccupancySnapshot, SyntheticPatient, ValidationReport,
+    Hospital, OccupancySnapshot, SyntheticPatient, ValidationReport, WaitingQueueEntry, BedTurnaround,
 )
 from app.services.analytics import get_run_snapshot_summary, scenario_name_for_run
 from app.schemas import (
@@ -30,9 +30,9 @@ ENTITY_DEFINITIONS = {
     },
     "admissions": {
         "model": Admission,
-        "fields": ["id", "run_id", "workspace_id", "hospital_id", "patient_id", "department_id", "initial_bed_id", "admitted_at", "status"],
-        "labels": ["Admission ID", "Generation Run ID", "Workspace ID", "Hospital ID", "Patient Record ID", "Department ID", "Initial Bed ID", "Admitted At (UTC)", "Status"],
-        "search": ["status"],
+        "fields": ["id", "run_id", "workspace_id", "hospital_id", "patient_id", "department_id", "initial_bed_id", "admitted_at", "status", "admission_type", "requested_at", "scheduled_at", "bed_assigned_at"],
+        "labels": ["Admission ID", "Generation Run ID", "Workspace ID", "Hospital ID", "Patient Record ID", "Department ID", "Initial Bed ID", "Admitted At (UTC)", "Status", "Admission Type", "Requested At (UTC)", "Scheduled At (UTC)", "Bed Assigned At (UTC)"],
+        "search": ["status", "admission_type"],
         "order": [Admission.admitted_at, Admission.id],
     },
     "discharges": {
@@ -63,7 +63,27 @@ ENTITY_DEFINITIONS = {
         "search": [],
         "order": [OccupancySnapshot.snapshot_at, OccupancySnapshot.department_id, OccupancySnapshot.id],
     },
+    "waiting_queue": {
+        "model": WaitingQueueEntry,
+        "fields": ["id", "run_id", "workspace_id", "hospital_id", "request_number", "patient_id", "department_id", "admission_id", "requested_at", "priority", "status", "bed_assigned_at", "waiting_duration_seconds", "outcome_reason"],
+        "labels": ["Queue Entry ID", "Generation Run ID", "Workspace ID", "Hospital ID", "Request Number", "Patient Record ID", "Department ID", "Admission ID", "Requested At (UTC)", "Priority", "Status", "Bed Assigned At (UTC)", "Waiting Duration (seconds)", "Outcome Reason"],
+        "search": ["priority", "status", "outcome_reason"],
+        "order": [WaitingQueueEntry.requested_at, WaitingQueueEntry.request_number],
+    },
+    "bed_turnaround": {
+        "model": BedTurnaround,
+        "fields": ["id", "run_id", "workspace_id", "hospital_id", "assignment_id", "admission_id", "bed_id", "department_id", "started_at", "completed_at", "duration_seconds"],
+        "labels": ["Turnaround ID", "Generation Run ID", "Workspace ID", "Hospital ID", "Assignment ID", "Admission ID", "Bed ID", "Department ID", "Cleaning Started At (UTC)", "Cleaning Completed At (UTC)", "Turnaround Duration (seconds)"],
+        "search": [],
+        "order": [BedTurnaround.started_at, BedTurnaround.id],
+    },
 }
+
+DATASET_SCHEMA_VERSION = "1.3.0"
+BED_INVENTORY_FIELDS = [
+    "run_id", "hospital_id", "bed_id", "bed_code", "department_id", "department_name",
+    "bed_category", "bed_status", "generation_pool_member",
+]
 
 
 def _run_or_404(db: Session, run_id: str) -> GenerationRun:
@@ -104,6 +124,9 @@ def _record_counts(db: Session, runs: list[GenerationRun], workspace_id: int | N
         for run_id, hospital_id, total in rows:
             if run_hospitals.get(run_id) == hospital_id:
                 counts[run_id][entity] = int(total)
+    for run in runs:
+        counts[run.run_id]["waiting_queue"] = run.waiting_queue_count
+        counts[run.run_id]["bed_turnaround"] = run.bed_turnaround_count
     return {run_id: DatasetRecordCounts(**values) for run_id, values in counts.items()}
 
 
@@ -217,7 +240,7 @@ def get_dataset_detail(db: Session, run_id: str) -> DatasetRunDetailRead:
 def _entity_or_422(entity: str) -> dict:
     definition = ENTITY_DEFINITIONS.get(entity)
     if definition is None:
-        choices = ", ".join(ENTITY_DEFINITIONS)
+        choices = ", ".join((*ENTITY_DEFINITIONS, "bed_inventory"))
         raise HTTPException(status_code=422, detail=f"Invalid dataset entity. Choose one of: {choices}.")
     return definition
 
@@ -241,6 +264,8 @@ def _scoped_entity_query(run: GenerationRun, entity: str, q: str | None = None):
 def preview_dataset_entity(db: Session, run_id: str, entity: str, *, page: int,
                            page_size: int, q: str | None) -> dict:
     run = _run_or_404(db, run_id)
+    if entity == "waiting_queue" and run.waiting_queue_count is None or entity == "bed_turnaround" and run.bed_turnaround_count is None:
+        raise HTTPException(status_code=409, detail=f"{entity.replace('_', ' ').title()} data is unavailable for this historical run.")
     definition, query = _scoped_entity_query(run, entity, q)
     model = definition["model"]
     total = db.scalar(select(func.count()).select_from(query.order_by(None).subquery())) or 0
@@ -261,8 +286,57 @@ def preview_dataset_entity(db: Session, run_id: str, entity: str, *, page: int,
 
 def stream_entity_csv(db: Session, run_id: str, entity: str) -> Iterator[str]:
     run = _run_or_404(db, run_id)
+    if entity == "waiting_queue" and run.waiting_queue_count is None or entity == "bed_turnaround" and run.bed_turnaround_count is None:
+        raise HTTPException(status_code=409, detail=f"{entity.replace('_', ' ').title()} data is unavailable for this historical run.")
     definition, query = _scoped_entity_query(run, entity)
     return _iter_entity_csv(db, query, definition)
+
+
+def _run_bed_inventory(run: GenerationRun) -> list[dict] | None:
+    """Return the immutable generation-time bed snapshot, or None if it is legacy-unavailable."""
+    config = run.config or {}
+    if "resolved_bed_inventory" not in config:
+        return None
+    inventory = config.get("resolved_bed_inventory")
+    if not isinstance(inventory, list):
+        raise HTTPException(status_code=409, detail="The run's saved bed inventory metadata is invalid.")
+    department_ids = set(config.get("resolved_department_ids") or [])
+    for item in inventory:
+        if not isinstance(item, dict) or item.get("hospital_id") != run.hospital_id or item.get("department_id") not in department_ids:
+            raise HTTPException(status_code=409, detail="The run's saved bed inventory is outside its hospital or department scope.")
+    return inventory
+
+
+def stream_bed_inventory_csv(db: Session, run_id: str) -> Iterator[str]:
+    run = _run_or_404(db, run_id)
+    inventory = _run_bed_inventory(run)
+    rows = [] if inventory is None else [
+        {
+            "run_id": run.run_id,
+            "hospital_id": item["hospital_id"],
+            "bed_id": item["bed_id"],
+            "bed_code": item["bed_code"],
+            "department_id": item["department_id"],
+            "department_name": item["department_name"],
+            "bed_category": item["bed_category"],
+            "bed_status": item["bed_status"],
+            "generation_pool_member": item["generation_pool_member"],
+        }
+        for item in inventory
+    ]
+    return _iter_rows_csv(BED_INVENTORY_FIELDS, rows)
+
+
+def _iter_rows_csv(fields: list[str], rows: list[dict]) -> Iterator[str]:
+    buffer = io.StringIO(newline="")
+    writer = csv.DictWriter(buffer, fieldnames=fields, lineterminator="\r\n", extrasaction="ignore")
+    writer.writeheader()
+    yield buffer.getvalue()
+    for row in rows:
+        buffer.seek(0)
+        buffer.truncate(0)
+        writer.writerow({field: _csv_value(row.get(field)) for field in fields})
+        yield buffer.getvalue()
 
 
 def _iter_entity_csv(db: Session, query, definition: dict) -> Iterator[str]:
@@ -299,16 +373,40 @@ def dataset_manifest(db: Session, run_id: str) -> dict:
     config = run.config or {}
     request = _request_config(run)
     has_generator_version = bool(config.get("generator_version"))
-    schema_version = config.get("schema_version")
+    generation_config_schema = config.get("schema_version")
     reasons = []
     if run.status != "completed":
         reasons.append("The generation run did not complete successfully.")
     if not has_generator_version:
         reasons.append("The run does not record a generator version.")
-    if not schema_version:
-        reasons.append("The run does not record a dataset schema version.")
+    if not generation_config_schema:
+        reasons.append("The run does not record a generation configuration schema version.")
+    inventory = _run_bed_inventory(run)
+    record_counts = detail.record_counts.model_dump()
+    record_counts["bed_inventory"] = None if inventory is None else len(inventory)
+    configuration = dict(config)
+    configuration.pop("resolved_bed_inventory", None)
+    scenario = request.get("scenario")
+    scenario_name = scenario_name_for_run(run)
+    exported_files = [
+        {"file": "patients.csv", "description": "Fictional patient demographics; primary key id joins to admissions.patient_id.", "record_count": record_counts["patients"], "status": "available"},
+        {"file": "admissions.csv", "description": "Admission events; joins to patients by patient_id and to runs by run_id. admission_type is planned or emergency; requested_at is request time, scheduled_at is populated for planned admissions, admitted_at is the generated arrival/admission time, and bed_assigned_at records the first assignment time. Historical rows without these values remain null.", "record_count": record_counts["admissions"], "status": "available"},
+        {"file": "discharges.csv", "description": "Discharge events; joins to admissions by admission_id. An admitted patient without a discharge row may be ongoing at the observation-window end; historical missing rows are not inferred.", "record_count": record_counts["discharges"], "status": "available"},
+        {"file": "bed_assignments.csv", "description": "Bed assignment intervals; joins to admissions by admission_id, departments by department_id, and bed_inventory by bed_id when inventory metadata is available. A blank end_at denotes an ongoing assignment at the observation-window end when recorded by the generator.", "record_count": record_counts["bed_assignments"], "status": "available"},
+        {"file": "bed_transfers.csv", "description": "Bed transfer events; joins to admissions by admission_id and identifies source and destination beds/departments.", "record_count": record_counts["bed_transfers"], "status": "available"},
+        {"file": "occupancy_snapshots.csv", "description": "Department-level occupancy snapshots; joins to departments by department_id.", "record_count": record_counts["occupancy_snapshots"], "status": "available"},
+        {"file": "waiting_queue.csv", "description": "One request outcome per synthetic patient request. Assigned entries link to admissions; unresolved or maximum-wait outcomes have a blank admission_id and assignment fields. Durations are elapsed seconds.", "record_count": record_counts["waiting_queue"], "status": "unavailable" if record_counts["waiting_queue"] is None else "available"},
+        {"file": "bed_turnaround.csv", "description": "Cleaning/turnaround intervals linked to the closed bed assignment that vacated the bed. Intervals are half-open [started_at, completed_at); ongoing assignments have no turnaround row.", "record_count": record_counts["bed_turnaround"], "status": "unavailable" if record_counts["bed_turnaround"] is None else "available"},
+        {
+            "file": "bed_inventory.csv",
+            "description": "Generation-time bed inventory for this run's selected hospital and departments. generation_pool_member marks beds eligible for the generator; non-operational beds remain in the inventory with their recorded status.",
+            "record_count": record_counts["bed_inventory"],
+            "status": "unavailable" if inventory is None else "empty" if not inventory else "available",
+        },
+    ]
     return {
         "application": {"name": "BedSynth AI"},
+        "dataset_schema_version": DATASET_SCHEMA_VERSION,
         "dataset_id": run.run_id,
         "generation_run_id": run.run_id,
         "workspace_id": run.workspace_id,
@@ -320,16 +418,85 @@ def dataset_manifest(db: Session, run_id: str) -> dict:
             "configured_start_date": request.get("start_date"),
             "configured_end_date": request.get("end_date"),
             "seed": run.seed,
+            "scenario": scenario,
+            "scenario_name": scenario_name,
             "target_occupancy_pct": request.get("target_occupancy_pct"),
+            "patient_profile": request.get("patient_profile"),
+            "arrival_profile": request.get("arrival_profile"),
+            "department_demand_weights": request.get("department_demand_weights"),
+            "length_of_stay_profile": request.get("length_of_stay_profile"),
+            "department_length_of_stay_profiles": request.get("department_length_of_stay_profiles"),
+            "waiting_queue": request.get("waiting_queue"),
+            "bed_turnaround_profile": request.get("bed_turnaround_profile"),
+            "department_bed_turnaround_profiles": request.get("department_bed_turnaround_profiles"),
+            "admission_arrival_policy": config.get("admission_arrival_policy"),
+            "length_of_stay_policy": config.get("length_of_stay_policy"),
             "selected_departments": [department.model_dump() for department in detail.selected_departments],
-            "configuration": config,
+            "configuration": configuration,
+            "bed_inventory_metadata": {
+                "available": inventory is not None,
+                "record_count": None if inventory is None else len(inventory),
+            },
         },
         "versions": {
             "generator": config.get("generator_version"),
-            "schema": schema_version,
+            "schema": DATASET_SCHEMA_VERSION,
+            "generation_config_schema": generation_config_schema,
             "application_at_generation": config.get("application_version"),
         },
-        "record_counts": detail.record_counts.model_dump(),
+        "record_counts": record_counts,
+        "exported_files": exported_files,
+        "timestamp_convention": {
+            "timezone": "UTC",
+            "format": "ISO 8601 date and datetime values",
+            "serialization": "Values are serialized from stored timestamps without applying a time shift. SQLite may return naive datetime values; the generator constructs operation timestamps under its UTC policy.",
+            "historical_data": "No existing timestamps are rewritten. Runs that predate explicit UTC metadata retain their stored values; consumers should not infer an offset that is not present in a value.",
+        },
+        "admission_timestamp_semantics": {
+            "admission_type": "planned or emergency for runs generated with dataset schema 1.1.0; null means unavailable for a historical run and is not inferred",
+            "requested_at": "Synthetic admission request instant, in UTC",
+            "scheduled_at": "Planned arrival time; null for emergency admissions and unavailable for historical rows without the field",
+            "admitted_at": "Generated hospital arrival/admission instant, in UTC",
+            "bed_assigned_at": "First actual bed assignment instant, in UTC; it may occur after requested_at when a queue wait is simulated",
+            "scenario_adjustment": "Emergency Surge applies a documented multiplier to the configured emergency-to-planned odds; the requested base proportions remain in generation.configuration.arrival_profile",
+        },
+        "length_of_stay_semantics": {
+            "unit": "days",
+            "distribution": "fixed uses the configured mode_days value; triangular uses minimum_days, mode_days, and maximum_days with seeded sampling",
+            "department_profiles": "A configured profile applies only to its selected department; otherwise the global length_of_stay_profile applies",
+            "seasonal_disease_surge": "The existing age-band factor is applied to the sampled stay and bounded by that selected profile's minimum_days and maximum_days",
+            "discharge": "A discharge row is recorded only when the sampled discharge instant is within the configured observation window. Longer stays remain admitted with a null assignment end_at; this is right-censoring at the window boundary, not a fabricated discharge",
+            "historical_data": "Missing historical discharge or assignment end timestamps remain unavailable and are not inferred",
+        },
+        "waiting_queue_semantics": {
+            "request_timestamp": "For new runs, requested_at is the generated arrival/request instant for both admission types; planned scheduled_at records the same scheduled instant.",
+            "wait_duration": "bed_assigned_at minus requested_at, measured in seconds; it is null unless a request is assigned.",
+            "priority": "Configured emergency-first, planned-first, or arrival-order policy; request timestamp and stable request number break ties deterministically.",
+            "outcomes": "assigned, waiting at observation-window end, or max_wait_exceeded. Unassigned requests do not create Admission rows because the existing Admission schema requires a bed.",
+            "historical_data": "Runs without a saved waiting_queue_count have unavailable queue data; they are not treated as zero requests.",
+        },
+        "bed_turnaround_semantics": {
+            "duration_unit": "seconds",
+            "interval": "Half-open [started_at, completed_at); started_at equals the associated assignment end_at.",
+            "patient_los": "Turnaround is separate from the patient's stay and does not shift discharge time.",
+            "historical_data": "Runs without a saved bed_turnaround_count have unavailable turnaround data; no events are inferred.",
+        },
+        "relationships": [
+            {"parent_file": "patients.csv", "parent_key": "id", "child_file": "admissions.csv", "child_key": "patient_id"},
+            {"parent_file": "admissions.csv", "parent_key": "id", "child_file": "discharges.csv", "child_key": "admission_id"},
+            {"parent_file": "admissions.csv", "parent_key": "id", "child_file": "bed_assignments.csv", "child_key": "admission_id"},
+            {"parent_file": "admissions.csv", "parent_key": "id", "child_file": "bed_transfers.csv", "child_key": "admission_id"},
+            {"parent_file": "admissions.csv", "parent_key": "id", "child_file": "waiting_queue.csv", "child_key": "admission_id", "note": "Blank admission_id denotes an unresolved request."},
+            {"parent_file": "bed_assignments.csv", "parent_key": "id", "child_file": "bed_turnaround.csv", "child_key": "assignment_id"},
+            {"parent_file": "generation.selected_departments", "parent_key": "department_id", "child_file": "occupancy_snapshots.csv", "child_key": "department_id"},
+            {"parent_file": "generation_run_id", "parent_key": "run_id", "child_file": "all CSV exports", "child_key": "run_id"},
+            {"parent_file": "bed_inventory.csv", "parent_key": "bed_id", "child_file": "bed_assignments.csv", "child_key": "bed_id", "availability": "Only when generation-time inventory metadata is available."},
+        ],
+        "null_semantics": {
+            "meaning": "Null or empty fields mean the value was not recorded or is unavailable; they are not inferred defaults.",
+            "historical_metadata": "Missing scenario, patient profile, length-of-stay profile, admission type, admission timestamps, waiting queue, turnaround, or bed inventory metadata is reported as unavailable. An empty inventory/event export is distinct from missing metadata. Historical events are not inferred.",
+            "csv": "Nullable values serialize as empty CSV cells.",
+        },
         "validation_reports": [report.model_dump(mode="json") for report in detail.validation_reports],
         "reproducibility": {
             "reproducible": not reasons,

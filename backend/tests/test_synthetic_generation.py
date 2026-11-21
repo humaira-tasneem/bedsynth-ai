@@ -1,6 +1,6 @@
 from collections.abc import Generator
 from contextlib import asynccontextmanager
-from datetime import date
+from datetime import date, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -20,6 +20,8 @@ from app.models import (
     GenerationRun,
     OccupancySnapshot,
     SyntheticPatient,
+    WaitingQueueEntry,
+    BedTurnaround,
     utc_now,
 )
 from app.routes import get_db
@@ -101,6 +103,71 @@ def preview_and_generate(client: TestClient, hospital_id: int, config: dict, key
     return response.json()
 
 
+def test_waiting_queue_turnaround_preview_generation_and_validation_match(generation_client: TestClient) -> None:
+    _, hospital_id, departments = make_hospital(generation_client, department_count=1, beds_per_department=1)
+    config = generation_config(departments, admissions=10, seed=731)
+    config.update({
+        "start_date": "2025-01-01", "end_date": "2025-01-07", "target_occupancy_pct": 100,
+        "length_of_stay_profile": {"distribution": "fixed", "minimum_days": 2, "mode_days": 2, "maximum_days": 2},
+        "arrival_profile": {"planned_pct": 0, "emergency_pct": 100, "time_of_day": "uniform", "day_of_week": "uniform"},
+        "waiting_queue": {"priority_policy": "emergency_first", "maximum_wait_hours": 48},
+        "bed_turnaround_profile": {"distribution": "fixed", "minimum_hours": 3, "mode_hours": 3, "maximum_hours": 3},
+    })
+    response = generation_client.post(f"/api/v1/hospitals/{hospital_id}/generation-runs/preview", json=config)
+    assert response.status_code == 200, response.text
+    preview = response.json()
+    assert preview["projected_waiting_patients"] + preview["projected_max_wait_exceeded"] > 0
+    assert preview["projected_average_wait_minutes"] >= 0
+    assert preview["projected_turnaround_events"] > 0
+
+    run = preview_and_generate(generation_client, hospital_id, config)
+    assert run["waiting_queue_count"] == preview["projected_admissions"]
+    assert run["bed_turnaround_count"] == preview["projected_turnaround_events"]
+    with generation_client.test_sessions() as db:
+        entries = list(db.scalars(select(WaitingQueueEntry).where(WaitingQueueEntry.run_id == run["run_id"])).all())
+        turnarounds = list(db.scalars(select(BedTurnaround).where(BedTurnaround.run_id == run["run_id"])).all())
+        admissions = list(db.scalars(select(Admission).where(Admission.run_id == run["run_id"])).all())
+        assignments = list(db.scalars(select(BedAssignment).where(BedAssignment.run_id == run["run_id"])).all())
+        assert len(entries) == run["patients_count"]
+        assert sum(entry.status == "assigned" for entry in entries) == len(admissions)
+        assert all(entry.waiting_duration_seconds is None or entry.waiting_duration_seconds >= 0 for entry in entries)
+        assert all(entry.bed_assigned_at is None or entry.bed_assigned_at >= entry.requested_at for entry in entries)
+        assert all(next(a for a in assignments if a.id == turn.assignment_id).end_at == turn.started_at for turn in turnarounds)
+        assert all(turn.completed_at > turn.started_at for turn in turnarounds)
+    validation = generation_client.post(f"/api/v1/generation-runs/{run['run_id']}/validations")
+    assert validation.status_code == 201, validation.text
+    assert not any(issue["code"] in {"waiting_queue_status_and_duration", "turnaround_intervals"} for issue in validation.json()["issues"])
+
+
+def test_waiting_queue_priority_and_department_turnaround_override(generation_client: TestClient) -> None:
+    _, hospital_id, departments = make_hospital(generation_client, department_count=1, beds_per_department=2)
+    config = generation_config(departments, admissions=8, seed=832)
+    config.update({
+        "start_date": "2025-02-01", "end_date": "2025-02-10", "target_occupancy_pct": 100,
+        "arrival_profile": {"planned_pct": 100, "emergency_pct": 0, "time_of_day": "uniform", "day_of_week": "uniform"},
+        "waiting_queue": {"priority_policy": "planned_first", "maximum_wait_hours": 720},
+        "bed_turnaround_profile": {"distribution": "fixed", "minimum_hours": 1, "mode_hours": 1, "maximum_hours": 1},
+        "department_bed_turnaround_profiles": [{"department_id": departments[0]["id"], "distribution": "fixed", "minimum_hours": 4, "mode_hours": 4, "maximum_hours": 4}],
+    })
+    run = preview_and_generate(generation_client, hospital_id, config)
+    with generation_client.test_sessions() as db:
+        admissions = list(db.scalars(select(Admission).where(Admission.run_id == run["run_id"])).all())
+        turnarounds = list(db.scalars(select(BedTurnaround).where(BedTurnaround.run_id == run["run_id"])).all())
+        if turnarounds:
+            assert all(row.duration_seconds == 4 * 3600 for row in turnarounds)
+        assert all(row.bed_assigned_at >= row.requested_at for row in admissions)
+
+
+def test_invalid_waiting_and_turnaround_configuration_rejected() -> None:
+    base = {"start_date": "2025-01-01", "end_date": "2025-01-02", "target_admissions": 1, "target_occupancy_pct": 10, "seed": 1}
+    for addition in (
+        {"waiting_queue": {"maximum_wait_hours": -1}},
+        {"bed_turnaround_profile": {"distribution": "fixed", "minimum_hours": 0, "mode_hours": 1, "maximum_hours": 2}},
+    ):
+        with pytest.raises(Exception):
+            GenerationConfig.model_validate({**base, **addition})
+
+
 def test_generation_creates_scoped_records_and_valid_occupancy(generation_client: TestClient) -> None:
     workspace_id, hospital_id, departments = make_hospital(generation_client)
     config = generation_config(departments)
@@ -113,7 +180,7 @@ def test_generation_creates_scoped_records_and_valid_occupancy(generation_client
     assert run["status"] == "completed", run.get("error_message")
     assert run["workspace_id"] == workspace_id
     assert run["hospital_id"] == hospital_id
-    assert run["patients_count"] == run["admissions_count"] == run["discharges_count"] == 4
+    assert run["patients_count"] == run["admissions_count"] == 4
     assert run["snapshots_count"] == 6
 
     with generation_client.test_sessions() as db:
@@ -122,16 +189,25 @@ def test_generation_creates_scoped_records_and_valid_occupancy(generation_client
         discharges = list(db.scalars(select(Discharge).where(Discharge.run_id == run["run_id"])).all())
         assignments = list(db.scalars(select(BedAssignment).where(BedAssignment.run_id == run["run_id"])).all())
         transfers = list(db.scalars(select(BedTransfer).where(BedTransfer.run_id == run["run_id"])).all())
+        turnarounds = list(db.scalars(select(BedTurnaround).where(BedTurnaround.run_id == run["run_id"])).all())
         snapshots = list(db.scalars(select(OccupancySnapshot).where(OccupancySnapshot.run_id == run["run_id"])).all())
         assert all(patient.workspace_id == workspace_id and patient.hospital_id == hospital_id for patient in patients)
         assert all(admission.workspace_id == workspace_id and admission.hospital_id == hospital_id for admission in admissions)
         assert {admission.department_id for admission in admissions} == {department["id"] for department in departments}
-        assert all(admission.status == "discharged" for admission in admissions)
+        discharge_ids = {discharge.admission_id for discharge in discharges}
+        assert all((admission.status == "discharged") == (admission.id in discharge_ids) for admission in admissions)
+        assert run["discharges_count"] == len(discharges)
         assert all(discharge.discharged_at > next(a.admitted_at for a in admissions if a.id == discharge.admission_id) for discharge in discharges)
         assert all(patient.age_band in {"0-17", "18-34", "35-49", "50-64", "65-79", "80+"} for patient in patients)
         assert all(patient.synthetic_patient_id.startswith("SYN-") for patient in patients)
         assert len({patient.synthetic_patient_id for patient in patients}) == 4
         assert len(transfers) > 0
+        assert len(turnarounds) == sum(assignment.end_at is not None for assignment in assignments)
+        assert all(any(turn.assignment_id == assignment.id and turn.started_at == assignment.end_at
+                       for turn in turnarounds) for assignment in assignments if assignment.end_at is not None)
+        for turn in turnarounds:
+            assert not any(other.bed_id == turn.bed_id and other.id != turn.assignment_id
+                           and turn.started_at <= other.start_at < turn.completed_at for other in assignments)
         assert all(snapshot.available_beds == snapshot.operational_beds - snapshot.occupied_beds for snapshot in snapshots)
         assert all(snapshot.occupied_beds <= snapshot.operational_beds for snapshot in snapshots)
         assert all(snapshot.occupancy_pct == pytest.approx(snapshot.occupied_beds / snapshot.operational_beds * 100) for snapshot in snapshots)
@@ -146,14 +222,66 @@ def test_generation_creates_scoped_records_and_valid_occupancy(generation_client
                 grouped.setdefault(getattr(assignment, group_key), []).append(assignment)
             for intervals in grouped.values():
                 intervals.sort(key=lambda row: row.start_at)
-                assert all(left.end_at <= right.start_at for left, right in zip(intervals, intervals[1:]))
+                assert all(left.end_at is not None and left.end_at <= right.start_at for left, right in zip(intervals, intervals[1:]))
         for transfer in transfers:
             source = next(row for row in assignments if row.admission_id == transfer.admission_id and row.bed_id == transfer.source_bed_id)
             destination = next(row for row in assignments if row.admission_id == transfer.admission_id and row.bed_id == transfer.destination_bed_id)
-            discharge = next(row for row in discharges if row.admission_id == transfer.admission_id)
+            discharge = next((row for row in discharges if row.admission_id == transfer.admission_id), None)
             admission = next(row for row in admissions if row.id == transfer.admission_id)
             assert source.end_at == transfer.transferred_at == destination.start_at
-            assert admission.admitted_at < transfer.transferred_at < discharge.discharged_at
+            assert admission.admitted_at < transfer.transferred_at
+            if discharge:
+                assert transfer.transferred_at < discharge.discharged_at
+
+
+def test_emergency_priority_is_applied_to_requests_waiting_together(generation_client: TestClient, monkeypatch) -> None:
+    _, hospital_id, departments = make_hospital(generation_client, department_count=1, beds_per_department=1)
+    config = generation_config(departments, admissions=6, seed=315)
+    config.update({
+        "start_date": "2025-01-01", "end_date": "2025-01-10", "target_occupancy_pct": 100,
+        "arrival_profile": {"planned_pct": 50, "emergency_pct": 50, "time_of_day": "uniform", "day_of_week": "uniform"},
+        "waiting_queue": {"priority_policy": "emergency_first", "maximum_wait_hours": 240},
+        "length_of_stay_profile": {"distribution": "fixed", "minimum_days": 0.25, "mode_days": 0.25, "maximum_days": 0.25},
+        "bed_turnaround_profile": {"distribution": "fixed", "minimum_hours": 0, "mode_hours": 0, "maximum_hours": 0},
+    })
+    from app.services import synthetic_generation
+    monkeypatch.setattr(synthetic_generation, "_generate_arrival_timestamps", lambda *_args: [datetime(2025, 1, 1)] * 6)
+    run = preview_and_generate(generation_client, hospital_id, config)
+    with generation_client.test_sessions() as db:
+        entries = list(db.scalars(select(WaitingQueueEntry).where(
+            WaitingQueueEntry.run_id == run["run_id"], WaitingQueueEntry.status == "assigned",
+        ).order_by(WaitingQueueEntry.bed_assigned_at, WaitingQueueEntry.request_number)).all())
+        priorities = [entry.priority for entry in entries]
+        emergency_count = priorities.count("emergency")
+        assert emergency_count > 0 and emergency_count < len(priorities)
+        assert priorities[:emergency_count] == ["emergency"] * emergency_count
+        emergency_numbers = [entry.request_number for entry in entries if entry.priority == "emergency"]
+        assert emergency_numbers == sorted(emergency_numbers)
+
+
+def test_maximum_wait_expiry_is_reported_without_creating_admissions(generation_client: TestClient, monkeypatch) -> None:
+    _, hospital_id, departments = make_hospital(generation_client, department_count=1, beds_per_department=1)
+    config = generation_config(departments, admissions=4, seed=431)
+    config.update({
+        "start_date": "2025-01-01", "end_date": "2025-01-03", "target_occupancy_pct": 100,
+        "arrival_profile": {"planned_pct": 0, "emergency_pct": 100, "time_of_day": "uniform", "day_of_week": "uniform"},
+        "waiting_queue": {"priority_policy": "emergency_first", "maximum_wait_hours": 1},
+        "length_of_stay_profile": {"distribution": "fixed", "minimum_days": 2, "mode_days": 2, "maximum_days": 2},
+    })
+    from app.services import synthetic_generation
+    monkeypatch.setattr(synthetic_generation, "_generate_arrival_timestamps", lambda *_args: [datetime(2025, 1, 1)] * 4)
+    preview = generation_client.post(f"/api/v1/hospitals/{hospital_id}/generation-runs/preview", json=config)
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["projected_assigned_admissions"] == 1
+    assert preview.json()["projected_max_wait_exceeded"] == 3
+    with generation_client.test_sessions() as db:
+        assert db.scalar(select(func.count(GenerationRun.run_id))) == 0
+    run = preview_and_generate(generation_client, hospital_id, config)
+    with generation_client.test_sessions() as db:
+        queue = list(db.scalars(select(WaitingQueueEntry).where(WaitingQueueEntry.run_id == run["run_id"])).all())
+        admissions = list(db.scalars(select(Admission).where(Admission.run_id == run["run_id"])).all())
+        assert sum(row.status == "max_wait_exceeded" for row in queue) == 3
+        assert len(admissions) == 1
 
 
 def test_generation_is_reproducible_and_idempotent(generation_client: TestClient) -> None:
@@ -174,12 +302,16 @@ def test_generation_is_reproducible_and_idempotent(generation_client: TestClient
             admissions = list(db.execute(select(Admission.patient_id, Admission.department_id, Admission.initial_bed_id, Admission.admitted_at).where(Admission.run_id == run_id).order_by(Admission.patient_id)))
             transfers = list(db.execute(select(BedTransfer.admission_id, BedTransfer.source_bed_id, BedTransfer.destination_bed_id, BedTransfer.transferred_at).where(BedTransfer.run_id == run_id).order_by(BedTransfer.admission_id)))
             snapshots = list(db.execute(select(OccupancySnapshot.department_id, OccupancySnapshot.snapshot_at, OccupancySnapshot.occupied_beds).where(OccupancySnapshot.run_id == run_id).order_by(OccupancySnapshot.department_id, OccupancySnapshot.snapshot_at)))
-            return {"patients": patients, "admissions": admissions, "transfers": transfers, "snapshots": snapshots}
+            discharges = list(db.execute(select(Discharge.discharged_at).where(Discharge.run_id == run_id).order_by(Discharge.discharged_at)))
+            assignments = list(db.execute(select(BedAssignment.bed_id, BedAssignment.start_at, BedAssignment.end_at).where(BedAssignment.run_id == run_id).order_by(BedAssignment.bed_id, BedAssignment.start_at)))
+            return {"patients": patients, "admissions": admissions, "transfers": transfers, "snapshots": snapshots, "discharges": discharges, "assignments": assignments}
 
         first_records = comparable(first["run_id"])
         second_records = comparable(second["run_id"])
         assert first_records["patients"] == second_records["patients"]
         assert first_records["snapshots"] == second_records["snapshots"]
+        assert first_records["discharges"] == second_records["discharges"]
+        assert first_records["assignments"] == second_records["assignments"]
         # Internal row IDs differ between runs; compare admission times and bed placements by index.
         assert [(row[1], row[2], row[3]) for row in first_records["admissions"]] == [(row[1], row[2], row[3]) for row in second_records["admissions"]]
         assert len(first_records["transfers"]) == len(second_records["transfers"])
@@ -213,6 +345,7 @@ def test_generation_uses_only_operational_beds(generation_client: TestClient) ->
 
     config = generation_config(departments, admissions=4)
     config["target_occupancy_pct"] = 100
+    config["length_of_stay_profile"] = {"distribution": "triangular", "minimum_days": 0.1, "mode_days": 0.2, "maximum_days": 0.3}
     preview = generation_client.post(f"/api/v1/hospitals/{hospital_id}/generation-runs/preview", json=config)
     assert preview.status_code == 200, preview.text
     assert preview.json()["total_operational_beds"] == 1
@@ -369,6 +502,7 @@ def test_scenario_presets_preview_and_persist_metadata(generation_client: TestCl
     workspace_id, hospital_id, departments = make_hospital(generation_client, department_count=2, beds_per_department=8)
     config = generation_config(departments, admissions=24, seed=31)
     config["scenario"] = scenario
+    config["end_date"] = "2025-01-14"
     selected_profile = {
         "minimum_age": 60,
         "maximum_age": 79,
@@ -401,6 +535,7 @@ def test_scenario_presets_preview_and_persist_metadata(generation_client: TestCl
 def test_scenario_occupancy_pressure_changes_planned_peak_and_volume(generation_client: TestClient) -> None:
     _, hospital_id, departments = make_hospital(generation_client, department_count=2, beds_per_department=10)
     common = generation_config(departments, admissions=30, seed=44)
+    common["end_date"] = "2025-01-14"
     planned_peaks = {}
     for scenario in ("normal_operations", "high_patient_inflow", "seasonal_disease_surge", "emergency_surge", "low_occupancy"):
         config = {**common, "scenario": scenario}
@@ -428,7 +563,7 @@ def test_inflow_and_emergency_scenarios_target_relevant_departments(generation_c
             .where(Admission.run_id == inflow["run_id"])
             .group_by(Admission.department_id)
         ).all())
-    assert counts[departments[0]["id"]] > counts[departments[1]["id"]]
+    assert counts.get(departments[0]["id"], 0) > counts.get(departments[1]["id"], 0)
 
     emergency_config = generation_config(departments, admissions=20, seed=72)
     emergency_config.update(scenario="emergency_surge", start_date="2025-01-01", end_date="2025-01-31")
@@ -437,13 +572,12 @@ def test_inflow_and_emergency_scenarios_target_relevant_departments(generation_c
         transfers = list(db.scalars(select(BedTransfer).where(BedTransfer.run_id == emergency["run_id"])).all())
         assert transfers
         assert all(row.source_department_id != row.destination_department_id for row in transfers)
-        daily_occupancy = dict(db.execute(
-            select(func.date(OccupancySnapshot.snapshot_at), func.sum(OccupancySnapshot.occupied_beds))
-            .where(OccupancySnapshot.run_id == emergency["run_id"])
-            .group_by(func.date(OccupancySnapshot.snapshot_at))
-            .order_by(func.date(OccupancySnapshot.snapshot_at))
-        ).all())
-        assert daily_occupancy["2025-01-01"] > daily_occupancy["2025-01-11"]
+        emergency_admissions = list(db.scalars(select(Admission).where(
+            Admission.run_id == emergency["run_id"], Admission.admission_type == "emergency",
+        )).all())
+        cutoff = datetime(2025, 1, 1) + timedelta(days=6)
+        early_emergency_arrivals = sum(row.admitted_at <= cutoff for row in emergency_admissions)
+        assert early_emergency_arrivals > len(emergency_admissions) / 2
 
 
 def test_seasonal_surge_has_longer_stays_for_selected_fictional_age_bands(generation_client: TestClient) -> None:
@@ -455,12 +589,14 @@ def test_seasonal_surge_has_longer_stays_for_selected_fictional_age_bands(genera
     with generation_client.test_sessions() as db:
         patients = {patient.id: patient for patient in db.scalars(select(SyntheticPatient).where(SyntheticPatient.run_id == run["run_id"])).all()}
         admissions = list(db.scalars(select(Admission).where(Admission.run_id == run["run_id"])).all())
+        discharge_by_admission = {row.admission_id: row for row in db.scalars(select(Discharge).where(Discharge.run_id == run["run_id"]))}
         durations: dict[int, float] = {}
         for admission in admissions:
-            rows = list(db.scalars(select(BedAssignment).where(BedAssignment.run_id == run["run_id"], BedAssignment.admission_id == admission.id)).all())
-            durations[admission.patient_id] = sum((row.end_at - row.start_at).total_seconds() for row in rows)
-        selected = [durations[row.id] for row in patients.values() if row.age_band in {"65-79", "80+"}]
-        others = [durations[row.id] for row in patients.values() if row.age_band not in {"65-79", "80+"}]
+            discharge = discharge_by_admission.get(admission.id)
+            if discharge:
+                durations[admission.patient_id] = (discharge.discharged_at - admission.admitted_at).total_seconds()
+        selected = [durations[row.id] for row in patients.values() if row.id in durations and row.age_band in {"65-79", "80+"}]
+        others = [durations[row.id] for row in patients.values() if row.id in durations and row.age_band not in {"65-79", "80+"}]
         assert selected and others
         assert sum(selected) / len(selected) > sum(others) / len(others)
 
@@ -501,3 +637,214 @@ def test_invalid_scenario_is_rejected(generation_client: TestClient) -> None:
     config = {**generation_config(departments), "scenario": "invented_scenario"}
     response = generation_client.post(f"/api/v1/hospitals/{hospital_id}/generation-runs/preview", json=config)
     assert response.status_code == 422
+
+
+def test_individual_arrivals_types_and_timestamp_semantics(generation_client: TestClient) -> None:
+    _, hospital_id, departments = make_hospital(generation_client, department_count=2, beds_per_department=20)
+    config = generation_config(departments, admissions=100, seed=181)
+    config.update(
+        start_date="2025-02-01", end_date="2025-02-14",
+        arrival_profile={"planned_pct": 63, "emergency_pct": 37, "time_of_day": "evening", "day_of_week": "weekends"},
+    )
+    run = preview_and_generate(generation_client, hospital_id, config)
+    assert run["status"] == "completed", run.get("error_message")
+    with generation_client.test_sessions() as db:
+        admissions = list(db.scalars(select(Admission).where(Admission.run_id == run["run_id"]).order_by(Admission.admitted_at)).all())
+        assert len({row.admitted_at for row in admissions}) == len(admissions)
+        assert all(datetime(2025, 2, 1) <= row.admitted_at <= datetime(2025, 2, 14, 23, 59, 58) for row in admissions)
+        assert sum(row.admission_type == "planned" for row in admissions) == 63
+        assert sum(row.admission_type == "emergency" for row in admissions) == 37
+        for row in admissions:
+            assert row.requested_at is not None and row.requested_at <= row.admitted_at
+            assert row.bed_assigned_at == row.admitted_at
+            if row.admission_type == "planned":
+                assert row.scheduled_at == row.admitted_at
+            else:
+                assert row.scheduled_at is None
+                assert row.requested_at == row.admitted_at
+            first_assignment = db.scalar(select(BedAssignment.start_at).where(
+                BedAssignment.run_id == run["run_id"], BedAssignment.admission_id == row.id,
+            ).order_by(BedAssignment.start_at).limit(1))
+            assert first_assignment == row.bed_assigned_at
+
+
+def test_arrivals_and_types_are_reproducible_with_seed(generation_client: TestClient) -> None:
+    _, hospital_id, departments = make_hospital(generation_client, department_count=2, beds_per_department=12)
+    config = generation_config(departments, admissions=30, seed=190)
+    config["arrival_profile"] = {"planned_pct": 70, "emergency_pct": 30, "time_of_day": "daytime", "day_of_week": "weekdays"}
+    first = preview_and_generate(generation_client, hospital_id, config)
+    second = preview_and_generate(generation_client, hospital_id, config)
+    with generation_client.test_sessions() as db:
+        def output(run_id: str) -> list[tuple]:
+            return list(db.execute(select(
+                Admission.admitted_at, Admission.admission_type, Admission.requested_at,
+                Admission.scheduled_at, Admission.bed_assigned_at, Admission.department_id,
+                Admission.initial_bed_id,
+            ).where(Admission.run_id == run_id).order_by(Admission.admitted_at, Admission.patient_id)))
+        assert output(first["run_id"]) == output(second["run_id"])
+
+
+def test_emergency_surge_increases_emergency_mix_and_frontloads_individual_events(generation_client: TestClient) -> None:
+    _, hospital_id, departments = make_hospital(generation_client, department_count=2, beds_per_department=18)
+    base = generation_config(departments, admissions=100, seed=199)
+    base.update(start_date="2025-01-01", end_date="2025-01-31")
+    normal = preview_and_generate(generation_client, hospital_id, base)
+    surge = preview_and_generate(generation_client, hospital_id, {**base, "scenario": "emergency_surge"})
+    with generation_client.test_sessions() as db:
+        normal_emergency = db.scalar(select(func.count(Admission.id)).where(Admission.run_id == normal["run_id"], Admission.admission_type == "emergency"))
+        surge_rows = list(db.scalars(select(Admission).where(Admission.run_id == surge["run_id"], Admission.admission_type == "emergency")).all())
+        assert len(surge_rows) > normal_emergency
+        cutoff = datetime(2025, 1, 1) + timedelta(days=6)
+        assert sum(row.admitted_at <= cutoff for row in surge_rows) > len(surge_rows) / 2
+        assert len({row.admitted_at for row in surge_rows}) == len(surge_rows)
+
+
+def test_department_demand_weights_are_scoped_and_affect_distribution(generation_client: TestClient) -> None:
+    _, hospital_id, departments = make_hospital(generation_client, department_count=2, beds_per_department=8)
+    config = generation_config(departments, admissions=12, seed=205)
+    config["department_demand_weights"] = [
+        {"department_id": departments[0]["id"], "weight": 10},
+        {"department_id": departments[1]["id"], "weight": 0.1},
+    ]
+    run = preview_and_generate(generation_client, hospital_id, config)
+    with generation_client.test_sessions() as db:
+        counts = dict(db.execute(select(Admission.department_id, func.count(Admission.id)).where(
+            Admission.run_id == run["run_id"],
+        ).group_by(Admission.department_id)).all())
+    assert counts.get(departments[0]["id"], 0) > counts.get(departments[1]["id"], 0)
+
+    foreign_workspace = generation_client.post("/api/v1/workspaces", json={"name": "Foreign Weight Workspace"}).json()
+    foreign_hospital = generation_client.post(f"/api/v1/workspaces/{foreign_workspace['id']}/hospitals", json={"name": "Foreign Weight Hospital", "code": "FW-1"}).json()
+    foreign_department = generation_client.post(f"/api/v1/hospitals/{foreign_hospital['id']}/departments", json={"name": "Foreign Department", "code": "F-1", "bed_capacity": 1}).json()
+    invalid = generation_client.post(f"/api/v1/hospitals/{hospital_id}/generation-runs/preview", json={
+        **generation_config(departments),
+        "department_demand_weights": [{"department_id": foreign_department["id"], "weight": 2}],
+    })
+    assert invalid.status_code == 422
+
+
+def test_invalid_admission_mix_is_rejected(generation_client: TestClient) -> None:
+    _, hospital_id, departments = make_hospital(generation_client, department_count=1, beds_per_department=2)
+    config = {**generation_config(departments), "arrival_profile": {"planned_pct": 55, "emergency_pct": 40}}
+    response = generation_client.post(f"/api/v1/hospitals/{hospital_id}/generation-runs/preview", json=config)
+    assert response.status_code == 422
+
+
+def test_default_length_of_stay_profile_is_bounded_triangular() -> None:
+    parsed = GenerationConfig.model_validate({
+        "start_date": "2025-01-01", "end_date": "2025-01-03", "target_admissions": 1,
+        "target_occupancy_pct": 50, "seed": 11,
+    })
+    assert parsed.length_of_stay_profile.model_dump() == {
+        "distribution": "triangular", "minimum_days": 0.5, "mode_days": 1.0, "maximum_days": 2.0,
+    }
+    assert parsed.department_length_of_stay_profiles == []
+
+
+@pytest.mark.parametrize("profile", [
+    {"distribution": "triangular", "minimum_days": 2, "mode_days": 1, "maximum_days": 3},
+    {"distribution": "triangular", "minimum_days": 1, "mode_days": 3, "maximum_days": 2},
+    {"distribution": "fixed", "minimum_days": 1, "mode_days": 2, "maximum_days": 3},
+    {"distribution": "fixed", "minimum_days": 0, "mode_days": 0, "maximum_days": 0},
+])
+def test_invalid_length_of_stay_profiles_are_rejected(profile: dict) -> None:
+    with pytest.raises(ValueError):
+        GenerationConfig.model_validate({
+            "start_date": "2025-01-01", "end_date": "2025-01-03", "target_admissions": 1,
+            "target_occupancy_pct": 50, "seed": 11, "length_of_stay_profile": profile,
+        })
+
+
+def test_fixed_length_of_stay_and_department_override_are_applied(generation_client: TestClient) -> None:
+    _, hospital_id, departments = make_hospital(generation_client, department_count=2, beds_per_department=2)
+    config = generation_config(departments, admissions=4, seed=932)
+    config.update({
+        "target_occupancy_pct": 100,
+        "length_of_stay_profile": {"distribution": "fixed", "minimum_days": 0.5, "mode_days": 0.5, "maximum_days": 0.5},
+        "department_length_of_stay_profiles": [
+            {"department_id": departments[0]["id"], "distribution": "fixed", "minimum_days": 0.25, "mode_days": 0.25, "maximum_days": 0.25},
+            {"department_id": departments[1]["id"], "distribution": "fixed", "minimum_days": 0.75, "mode_days": 0.75, "maximum_days": 0.75},
+        ],
+    })
+    preview_response = generation_client.post(f"/api/v1/hospitals/{hospital_id}/generation-runs/preview", json=config)
+    assert preview_response.status_code == 200, preview_response.text
+    preview = preview_response.json()
+    assert preview["length_of_stay_profile"]["mode_days"] == 0.5
+    assert len(preview["department_length_of_stay_profiles"]) == 2
+    run = preview_and_generate(generation_client, hospital_id, config)
+    with generation_client.test_sessions() as db:
+        admissions = list(db.scalars(select(Admission).where(Admission.run_id == run["run_id"])))
+        discharges = {row.admission_id: row for row in db.scalars(select(Discharge).where(Discharge.run_id == run["run_id"]))}
+        expected = {departments[0]["id"]: 0.25, departments[1]["id"]: 0.75}
+        observed_departments = set()
+        for admission in admissions:
+            observed_departments.add(admission.department_id)
+            discharge = discharges.get(admission.id)
+            if discharge:
+                assert (discharge.discharged_at - admission.admitted_at).total_seconds() / 86400 == pytest.approx(expected[admission.department_id])
+        assert observed_departments == {department["id"] for department in departments}
+
+
+def test_department_length_of_stay_profile_cannot_reference_unselected_scope(generation_client: TestClient) -> None:
+    _, hospital_id, departments = make_hospital(generation_client, department_count=2, beds_per_department=2)
+    config = generation_config(departments)
+    config["department_ids"] = [departments[0]["id"]]
+    config["department_length_of_stay_profiles"] = [{
+        "department_id": departments[1]["id"], "distribution": "fixed",
+        "minimum_days": 1, "mode_days": 1, "maximum_days": 1,
+    }]
+    assert generation_client.post(f"/api/v1/hospitals/{hospital_id}/generation-runs/preview", json=config).status_code == 422
+
+
+def test_long_stay_remains_ongoing_at_observation_boundary(generation_client: TestClient) -> None:
+    _, hospital_id, departments = make_hospital(generation_client, department_count=1, beds_per_department=1)
+    config = generation_config(departments, admissions=1, seed=693)
+    config.update({
+        "start_date": "2025-01-01", "end_date": "2025-01-01", "target_occupancy_pct": 100,
+        "length_of_stay_profile": {"distribution": "fixed", "minimum_days": 2, "mode_days": 2, "maximum_days": 2},
+    })
+    preview_response = generation_client.post(f"/api/v1/hospitals/{hospital_id}/generation-runs/preview", json=config)
+    assert preview_response.status_code == 200, preview_response.text
+    assert preview_response.json()["projected_discharges"] == 0
+    assert preview_response.json()["projected_ongoing_admissions"] == 1
+    run = preview_and_generate(generation_client, hospital_id, config)
+    with generation_client.test_sessions() as db:
+        admission = db.scalar(select(Admission).where(Admission.run_id == run["run_id"]))
+        assert admission is not None and admission.status == "admitted"
+        assert db.scalar(select(func.count(Discharge.id)).where(Discharge.run_id == run["run_id"])) == 0
+        assignment = db.scalar(select(BedAssignment).where(BedAssignment.run_id == run["run_id"]))
+        assert assignment is not None and assignment.end_at is None
+        snapshot = db.scalar(select(OccupancySnapshot).where(OccupancySnapshot.run_id == run["run_id"]))
+        assert snapshot is not None and snapshot.occupied_beds == 1
+    validation = generation_client.post(f"/api/v1/generation-runs/{run['run_id']}/validations")
+    assert validation.status_code == 201, validation.text
+    assert validation.json()["status"] == "passed"
+
+
+def test_infeasible_los_and_admission_volume_is_rejected_during_preview(generation_client: TestClient) -> None:
+    _, hospital_id, departments = make_hospital(generation_client, department_count=1, beds_per_department=1)
+    config = generation_config(departments, admissions=2, seed=1802)
+    config.update({
+        "start_date": "2025-01-01", "end_date": "2025-01-01", "target_occupancy_pct": 100,
+        "length_of_stay_profile": {"distribution": "fixed", "minimum_days": 1, "mode_days": 1, "maximum_days": 1},
+    })
+    response = generation_client.post(f"/api/v1/hospitals/{hospital_id}/generation-runs/preview", json=config)
+    assert response.status_code == 200, response.text
+    assert response.json()["projected_unresolved_requests"] == 1
+    assert response.json()["projected_assigned_admissions"] == 1
+    with generation_client.test_sessions() as db:
+        assert db.scalar(select(func.count(GenerationRun.run_id))) == 0
+
+
+@pytest.mark.parametrize("scenario", ["normal_operations", "high_patient_inflow", "seasonal_disease_surge", "emergency_surge", "low_occupancy"])
+def test_length_of_stay_profiles_are_compatible_with_all_scenarios(generation_client: TestClient, scenario: str) -> None:
+    _, hospital_id, departments = make_hospital(generation_client, department_count=1, beds_per_department=12)
+    config = generation_config(departments, admissions=8, seed=771)
+    config["scenario"] = scenario
+    config["length_of_stay_profile"] = {"distribution": "triangular", "minimum_days": 0.1, "mode_days": 0.3, "maximum_days": 0.6}
+    run = preview_and_generate(generation_client, hospital_id, config)
+    assert run["status"] == "completed", run.get("error_message")
+    with generation_client.test_sessions() as db:
+        admissions = list(db.scalars(select(Admission).where(Admission.run_id == run["run_id"])))
+        assert len(admissions) == run["admissions_count"]
+        assert all(admission.status in {"admitted", "discharged"} for admission in admissions)

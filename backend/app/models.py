@@ -109,6 +109,8 @@ class GenerationRun(Base):
     discharges_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     transfers_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     snapshots_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    waiting_queue_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    bed_turnaround_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     patients: Mapped[list["SyntheticPatient"]] = relationship(back_populates="run")
     admissions: Mapped[list["Admission"]] = relationship(back_populates="run")
@@ -144,6 +146,7 @@ class Admission(Base):
     __table_args__ = (
         UniqueConstraint("run_id", "patient_id", name="uq_admission_run_patient"),
         CheckConstraint("status IN ('admitted', 'discharged')", name="ck_admission_status"),
+        CheckConstraint("admission_type IS NULL OR admission_type IN ('planned', 'emergency')", name="ck_admission_type"),
         Index("ix_admission_hospital_time", "hospital_id", "admitted_at"),
     )
 
@@ -155,6 +158,10 @@ class Admission(Base):
     department_id: Mapped[int] = mapped_column(ForeignKey("departments.id", ondelete="RESTRICT"), nullable=False, index=True)
     initial_bed_id: Mapped[int] = mapped_column(ForeignKey("beds.id", ondelete="RESTRICT"), nullable=False)
     admitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    admission_type: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    bed_assigned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="discharged")
     run: Mapped[GenerationRun] = relationship(back_populates="admissions")
     patient: Mapped[SyntheticPatient] = relationship(back_populates="admissions")
@@ -217,6 +224,56 @@ class BedTransfer(Base):
     destination_bed_id: Mapped[int] = mapped_column(ForeignKey("beds.id", ondelete="RESTRICT"), nullable=False)
     transferred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     admission: Mapped[Admission] = relationship(back_populates="transfers")
+
+
+class WaitingQueueEntry(Base):
+    """Synthetic bed request outcome; no clinical/patient data beyond run linkage."""
+    __tablename__ = "waiting_queue_entries"
+    __table_args__ = (
+        UniqueConstraint("run_id", "request_number", name="uq_waiting_queue_run_request"),
+        CheckConstraint("priority IN ('emergency', 'planned')", name="ck_waiting_queue_priority"),
+        CheckConstraint("status IN ('assigned', 'waiting', 'max_wait_exceeded')", name="ck_waiting_queue_status"),
+        CheckConstraint("waiting_duration_seconds IS NULL OR waiting_duration_seconds >= 0", name="ck_waiting_queue_wait_nonnegative"),
+        Index("ix_waiting_queue_run_request", "run_id", "requested_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("generation_runs.run_id", ondelete="CASCADE"), nullable=False, index=True)
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id", ondelete="RESTRICT"), nullable=False, index=True)
+    hospital_id: Mapped[int] = mapped_column(ForeignKey("hospitals.id", ondelete="RESTRICT"), nullable=False, index=True)
+    request_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    patient_id: Mapped[int] = mapped_column(ForeignKey("synthetic_patients.id", ondelete="CASCADE"), nullable=False)
+    department_id: Mapped[int] = mapped_column(ForeignKey("departments.id", ondelete="RESTRICT"), nullable=False, index=True)
+    admission_id: Mapped[int | None] = mapped_column(ForeignKey("admissions.id", ondelete="CASCADE"), nullable=True, index=True)
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    priority: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    bed_assigned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    waiting_duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    outcome_reason: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+
+class BedTurnaround(Base):
+    """Turnaround interval after an assignment ends; half-open [start, complete)."""
+    __tablename__ = "bed_turnarounds"
+    __table_args__ = (
+        CheckConstraint("completed_at > started_at", name="ck_bed_turnaround_positive_interval"),
+        CheckConstraint("duration_seconds > 0", name="ck_bed_turnaround_positive_duration"),
+        UniqueConstraint("assignment_id", name="uq_bed_turnaround_assignment"),
+        Index("ix_bed_turnaround_bed_interval", "bed_id", "started_at", "completed_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("generation_runs.run_id", ondelete="CASCADE"), nullable=False, index=True)
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id", ondelete="RESTRICT"), nullable=False, index=True)
+    hospital_id: Mapped[int] = mapped_column(ForeignKey("hospitals.id", ondelete="RESTRICT"), nullable=False, index=True)
+    assignment_id: Mapped[int] = mapped_column(ForeignKey("bed_assignments.id", ondelete="CASCADE"), nullable=False)
+    admission_id: Mapped[int] = mapped_column(ForeignKey("admissions.id", ondelete="CASCADE"), nullable=False)
+    bed_id: Mapped[int] = mapped_column(ForeignKey("beds.id", ondelete="RESTRICT"), nullable=False, index=True)
+    department_id: Mapped[int] = mapped_column(ForeignKey("departments.id", ondelete="RESTRICT"), nullable=False, index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    duration_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
 class OccupancySnapshot(Base):

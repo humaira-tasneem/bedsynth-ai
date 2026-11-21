@@ -1,96 +1,101 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
-import {
-  Activity,
-  ArrowUpRight,
-  BedDouble,
-  Building2,
-  BarChart3,
-  Database,
-  FlaskConical,
-  Network,
-} from "lucide-react";
-
-type SectionId = "overview" | "network" | "hospitals" | "generate" | "assistant" | "analytics" | "validation" | "datasets";
-type WorkspaceSummary = { hospitals: number; departments: number; beds: number };
+import { motion } from "framer-motion";
+import { Activity, ArrowRight, BarChart3, Database, FlaskConical, LoaderCircle, Users } from "lucide-react";
 
 const apiBase = (process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
+type Counts = { patients: number; admissions: number; discharges: number; bed_assignments: number; bed_transfers: number; occupancy_snapshots: number; waiting_queue: number | null; bed_turnaround: number | null };
+type Dataset = { run_id: string; hospital_name: string; started_at: string; completed_at: string | null; status: "generating" | "completed" | "failed"; scenario_name: string | null; record_counts: Counts };
+type Library = { items: Dataset[]; total: number; pages: number };
+type DashboardData = { totalRuns: number; exportedRows: number; occupancy: number | null; occupancyDate: string | null; recent: Dataset[] };
+
+async function getJson<T>(path: string): Promise<T> {
+  const response = await fetch(`${apiBase}${path}`, { cache: "no-store" });
+  if (!response.ok) throw new Error(`Request failed (${response.status}).`);
+  return response.json();
+}
+
+function exportedRowCount(counts: Counts) {
+  return [counts.patients, counts.admissions, counts.discharges, counts.bed_assignments, counts.bed_transfers, counts.occupancy_snapshots, counts.waiting_queue, counts.bed_turnaround]
+    .reduce<number>((total, count) => total + (count ?? 0), 0);
+}
 
 export default function HomePage() {
-  const router = useRouter();
-  const [summary, setSummary] = useState<WorkspaceSummary | null>(null);
-  const [summaryFailed, setSummaryFailed] = useState(false);
+  const [data, setData] = useState<DashboardData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
 
   useEffect(() => {
-    let mounted = true;
-    async function loadSummary() {
+    let active = true;
+    async function load() {
       try {
-        const workspacesResponse = await fetch(`${apiBase}/api/v1/workspaces`, { cache: "no-store" });
-        if (!workspacesResponse.ok) throw new Error("Workspace request failed");
-        const workspaces: { id: number }[] = await workspacesResponse.json();
-        if (workspaces.length === 0) {
-          if (mounted) setSummary({ hospitals: 0, departments: 0, beds: 0 });
+        const workspaces = await getJson<{ id: number }[]>("/api/v1/workspaces");
+        if (!workspaces.length) {
+          if (active) setData({ totalRuns: 0, exportedRows: 0, occupancy: null, occupancyDate: null, recent: [] });
           return;
         }
-        const hospitalsResponse = await fetch(`${apiBase}/api/v1/workspaces/${workspaces[0].id}/hospitals`, { cache: "no-store" });
-        if (!hospitalsResponse.ok) throw new Error("Hospital request failed");
-        const hospitals: { departments: { is_archived: boolean; beds: { status: string }[] }[] }[] = await hospitalsResponse.json();
-        if (mounted) setSummary({
-          hospitals: hospitals.length,
-          departments: hospitals.reduce((total, hospital) => total + hospital.departments.filter((department) => !department.is_archived).length, 0),
-          beds: hospitals.reduce((total, hospital) => total + hospital.departments.flatMap((department) => department.beds).filter((bed) => bed.status !== "retired").length, 0),
-        });
-      } catch {
-        if (mounted) setSummaryFailed(true);
-      }
+        const workspaceId = workspaces[0].id;
+        const first = await getJson<Library>(`/api/v1/workspaces/${workspaceId}/datasets?page=1&page_size=100&sort=newest`);
+        const pages: Library[] = [first];
+        for (let start = 2; start <= first.pages; start += 4) {
+          const batch = Array.from({ length: Math.min(4, first.pages - start + 1) }, (_, index) => start + index);
+          pages.push(...await Promise.all(batch.map((page) => getJson<Library>(`/api/v1/workspaces/${workspaceId}/datasets?page=${page}&page_size=100&sort=newest`))));
+        }
+        const allRuns = pages.flatMap((page) => page.items);
+        const completed = allRuns.filter((run) => run.status === "completed");
+        const exportedRows = completed.reduce((total, run) => total + exportedRowCount(run.record_counts), 0);
+        let occupancy: number | null = null;
+        let occupancyDate: string | null = null;
+        const latestCompleted = completed[0];
+        if (latestCompleted) {
+          const detail = await getJson<{ analytics_summary: { latest_occupancy_pct: number | null; latest_snapshot_date: string | null } }>(`/api/v1/generation-runs/${latestCompleted.run_id}/dataset`);
+          occupancy = detail.analytics_summary.latest_occupancy_pct;
+          occupancyDate = detail.analytics_summary.latest_snapshot_date;
+        }
+        if (active) setData({ totalRuns: completed.length, exportedRows, occupancy, occupancyDate, recent: allRuns.slice(0, 5) });
+      } catch (cause) {
+        if (active) setError(cause instanceof Error ? cause.message : "Dashboard data could not be loaded.");
+      } finally { if (active) setLoading(false); }
     }
-    void loadSummary();
-    return () => { mounted = false; };
+    void load();
+    return () => { active = false; };
   }, []);
 
-  function selectSection(id: SectionId) {
-    const routes: Record<SectionId, string> = { overview: "/", network: "/hospitals", hospitals: "/hospitals", generate: "/generate", assistant: "/assistant", analytics: "/analytics", validation: "/validation", datasets: "/datasets" };
-    router.push(routes[id]);
-  }
+  const cards = [
+    { label: "Completed datasets", value: data?.totalRuns ?? 0, detail: "Saved generation runs", icon: Database, tone: "metric-icon-violet" },
+    { label: "Operational rows", value: data?.exportedRows ?? 0, detail: "Known rows across completed runs", icon: Users, tone: "metric-icon-blue" },
+    { label: "Latest occupancy", value: data?.occupancy == null ? "—" : `${data.occupancy.toFixed(1)}%`, detail: data?.occupancyDate ? `Snapshot · ${data.occupancyDate}` : "No occupancy snapshot available", icon: Activity, tone: "metric-icon-teal" },
+  ];
 
-  return (
-    <main className="page-content dashboard-page" id="main-content">
-          {
-            <>
-              <div className="page-heading">
-                <div><div className="page-kicker"><span className="kicker-line" /> HOSPITAL OPERATIONS DATA</div><h1>Good morning</h1><p className="page-subtitle">My Workspace brings your hospitals and operational datasets together.</p></div>
-                <div className="page-heading-actions"><button className="button button-secondary" onClick={() => selectSection("analytics")}><BarChart3 size={17} /> View analytics <ArrowUpRight size={16} /></button><button className="button button-primary" onClick={() => selectSection("hospitals")}><Building2 size={17} /> Set up a hospital <ArrowUpRight size={16} /></button></div>
-              </div>
+  return <main className="page-content dashboard-page" id="main-content">
+    <div className="dashboard-welcome-row">
+      <div className="page-heading"><div><div className="page-kicker"><span className="kicker-line" /> SYNTHETIC DATA WORKSPACE</div><h1>Welcome to BedSynth AI</h1><p className="page-subtitle">Generate reproducible hospital operations datasets for research and model testing.</p></div></div>
+      <Link href="/generate" className="button button-primary dashboard-primary-action"><FlaskConical size={18} /> Generate Dataset <ArrowRight size={16} /></Link>
+    </div>
 
-              <section className="welcome-banner" aria-labelledby="welcome-title">
-                <div className="welcome-orb orb-one" /><div className="welcome-orb orb-two" />
-                <div className="welcome-content"><span className="welcome-tag"><span className="welcome-tag-dot" /> WORKSPACE ORGANIZATION</span><h2 id="welcome-title">Organize hospitals and networks</h2><p>Hospitals and optional hospital networks live inside My Workspace. Departments, beds, and operational records stay scoped to each hospital.</p><button className="button button-banner" onClick={() => selectSection("network")}>Open Hospital Studio <ArrowUpRight size={16} /></button></div>
-                <div className="welcome-illustration" aria-hidden="true"><div className="illustration-ring ring-outer" /><div className="illustration-ring ring-inner" /><div className="illustration-building"><Building2 size={56} strokeWidth={1.2} /></div><span className="illustration-node node-top"><Network size={17} /></span><span className="illustration-node node-left"><BedDouble size={16} /></span><span className="illustration-node node-right"><Activity size={16} /></span></div>
-              </section>
+    {error && <div className="generator-alert generator-alert-error" role="alert">{error} <button type="button" onClick={() => window.location.reload()}>Retry</button></div>}
+    {loading && <div className="generator-loading" role="status"><LoaderCircle className="generator-spin" size={18} /> Loading saved dataset summaries…</div>}
 
-              <section className="section-block" aria-labelledby="snapshot-title">
-                <div className="section-title-row"><div><h2 id="snapshot-title">Workspace snapshot</h2><p className="section-subtitle">Configured hospitals, departments, and beds in this workspace.</p></div><span className="snapshot-period">CURRENT WORKSPACE</span></div>
-                <div className="snapshot-grid">
-                  <article className="metric-card"><div className="metric-top"><span className="metric-icon metric-icon-teal"><Building2 size={18} /></span><span className="metric-label">HOSPITALS</span></div><div className="metric-empty">{summaryFailed ? "—" : summary?.hospitals ?? "…"}</div><p className="metric-foot">{summaryFailed ? "Could not load workspace" : summary?.hospitals === 0 ? "No hospitals configured" : "Active in this workspace"}</p></article>
-                  <article className="metric-card"><div className="metric-top"><span className="metric-icon metric-icon-blue"><BedDouble size={18} /></span><span className="metric-label">DEPARTMENTS</span></div><div className="metric-empty">{summaryFailed ? "—" : summary?.departments ?? "…"}</div><p className="metric-foot">{summaryFailed ? "Could not load workspace" : "Active hospital departments"}</p></article>
-                  <article className="metric-card"><div className="metric-top"><span className="metric-icon metric-icon-violet"><BedDouble size={18} /></span><span className="metric-label">BED INVENTORY</span></div><div className="metric-empty">{summaryFailed ? "—" : summary?.beds ?? "…"}</div><p className="metric-foot">Non-retired beds in this workspace</p></article>
-                </div>
-              </section>
+    <section className="section-block" aria-label="Dataset summary">
+      <div className="snapshot-grid">
+        {cards.map(({ label, value, detail, icon: Icon, tone }, index) => <motion.article className="metric-card" key={label} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.22, delay: index * 0.06 }}><div className="metric-top"><span className={`metric-icon ${tone}`}><Icon size={18} /></span><span className="metric-label">{label}</span></div><div className="metric-empty">{loading ? "…" : value}</div><p className="metric-foot">{detail}</p></motion.article>)}
+      </div>
+      <p className="dashboard-data-note">Row totals use saved counts from completed runs, exclude the separate bed inventory file, and omit historical optional tables whose counts are unavailable.</p>
+    </section>
 
-              <section className="section-block setup-section" aria-labelledby="setup-title">
-                <div className="section-title-row"><div><h2 id="setup-title">Your next steps</h2><p className="section-subtitle">A simple path to your first synthetic dataset.</p></div><span className="setup-progress">HOSPITAL CONFIGURATION</span></div>
-                <div className="setup-list">
-                  <button className="setup-row" onClick={() => selectSection("hospitals")}><span className="setup-number">01</span><span className="setup-row-icon"><Building2 size={19} /></span><span className="setup-row-copy"><strong>Open Hospital Studio</strong><small>Manage hospitals, departments, and bed inventory.</small></span><span className="setup-status">AVAILABLE <ArrowUpRight size={14} /></span></button>
-                  <div className="setup-row setup-row-muted"><span className="setup-number">02</span><span className="setup-row-icon"><Network size={19} /></span><span className="setup-row-copy"><strong>Configure your network</strong><small>Create optional groupings for your hospitals.</small></span><span className="setup-status status-pending">IN HOSPITAL STUDIO</span></div>
-                  <button className="setup-row" onClick={() => selectSection("generate")}><span className="setup-number">03</span><span className="setup-row-icon"><FlaskConical size={19} /></span><span className="setup-row-copy"><strong>Generate a dataset</strong><small>Configure and review a synthetic operations run.</small></span><span className="setup-status">AVAILABLE <ArrowUpRight size={14} /></span></button>
-                </div>
-              </section>
+    <section className="section-block dashboard-recent" aria-labelledby="recent-runs-heading">
+      <div className="section-title-row"><div><h2 id="recent-runs-heading">Recent generation activity</h2><p className="section-subtitle">Your latest saved runs and their current status.</p></div><Link href="/datasets" className="text-link">View all datasets <ArrowRight size={15} /></Link></div>
+      {loading ? <div className="generator-loading"><LoaderCircle className="generator-spin" size={18} /> Loading recent runs…</div>
+        : !data?.recent.length ? <div className="dashboard-empty"><Database size={22} /><h3>No datasets yet</h3><p>Configure a hospital, then generate your first synthetic dataset.</p><Link href="/generate" className="button button-primary">Open Generator <ArrowRight size={15} /></Link></div>
+          : <div className="dashboard-run-list">{data.recent.map((run) => <Link className="dashboard-run-row" href={`/datasets/${run.run_id}`} key={run.run_id}><span className="dashboard-run-icon"><Database size={18} /></span><span className="dashboard-run-copy"><strong>{run.hospital_name}</strong><small>{run.scenario_name ?? "Scenario unavailable"} · {new Date(run.started_at).toLocaleString()}</small></span><span className={`generator-status generator-status-${run.status}`}>{run.status}</span><span className="dashboard-run-count">{run.record_counts.patients.toLocaleString()} patients</span><ArrowRight className="dashboard-run-arrow" size={16} /></Link>)}</div>}
+    </section>
 
-              <footer className="page-footer"><span>BedSynth AI <span className="footer-dot">·</span> Synthetic operations data for testing</span><span>Built with privacy and provenance in mind</span></footer>
-            </>
-          }
-    </main>
-  );
+    <section className="dashboard-shortcuts" aria-label="Research tools">
+      <Link href="/datasets" className="dashboard-shortcut"><span className="metric-icon metric-icon-violet"><Database size={19} /></span><span><strong>Dataset library</strong><small>Search, inspect, and export saved runs.</small></span><ArrowRight size={16} /></Link>
+      <Link href="/analytics" className="dashboard-shortcut"><span className="metric-icon metric-icon-blue"><BarChart3 size={19} /></span><span><strong>Analytics</strong><small>Explore occupancy and patient flow.</small></span><ArrowRight size={16} /></Link>
+    </section>
+    <footer className="page-footer"><span>BedSynth AI · Synthetic data for research and optimization testing</span><span>Generated records are fictional</span></footer>
+  </main>;
 }

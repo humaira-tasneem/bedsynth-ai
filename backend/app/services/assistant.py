@@ -677,7 +677,11 @@ def validate_assistant_config(db: Session, request: AssistantConfigValidationReq
             {"field": _validation_error_field(error), "message": error["msg"]}
             for error in exc.errors()
         ]}) from exc
-    return _format_generation_config(AssistantConfigFields.model_validate(validated.model_dump(exclude={"scenario", "patient_profile"})), request.workspace_id, hospital, selected)
+    return _format_generation_config(AssistantConfigFields.model_validate(validated.model_dump(exclude={
+        "scenario", "patient_profile", "arrival_profile", "department_demand_weights",
+        "length_of_stay_profile", "department_length_of_stay_profiles", "waiting_queue",
+        "bed_turnaround_profile", "department_bed_turnaround_profiles",
+    })), request.workspace_id, hospital, selected)
 
 
 def _hospital_matches(hospitals: list[Hospital], name_or_code: str) -> list[Hospital]:
@@ -959,7 +963,11 @@ def chat_with_assistant(db: Session, request: AssistantChatRequest) -> dict:
         configuration = validate_assistant_config(db, AssistantConfigValidationRequest(
             workspace_id=request.workspace_id,
             hospital_id=hospital.id,
-            configuration=AssistantConfigFields.model_validate(valid_config.model_dump(exclude={"scenario", "patient_profile"})),
+            configuration=AssistantConfigFields.model_validate(valid_config.model_dump(exclude={
+                "scenario", "patient_profile", "arrival_profile", "department_demand_weights",
+                "length_of_stay_profile", "department_length_of_stay_profiles", "waiting_queue",
+                "bed_turnaround_profile", "department_bed_turnaround_profiles",
+            })),
         ))
     except HTTPException as exc:
         detail = exc.detail if isinstance(exc.detail, dict) else {}

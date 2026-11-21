@@ -50,6 +50,16 @@ def initialize_database() -> None:
                 "age_years": "INTEGER CHECK (age_years IS NULL OR age_years BETWEEN 0 AND 120)",
                 "gender": "VARCHAR(16) CHECK (gender IS NULL OR gender IN ('male', 'female', 'other'))",
             },
+            "admissions": {
+                "admission_type": "VARCHAR(16) CHECK (admission_type IS NULL OR admission_type IN ('planned', 'emergency'))",
+                "requested_at": "DATETIME",
+                "scheduled_at": "DATETIME",
+                "bed_assigned_at": "DATETIME",
+            },
+            "generation_runs": {
+                "waiting_queue_count": "INTEGER",
+                "bed_turnaround_count": "INTEGER",
+            },
         }
         with engine.begin() as connection:
             for table, additions in legacy_columns.items():

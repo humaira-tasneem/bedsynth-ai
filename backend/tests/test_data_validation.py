@@ -169,8 +169,11 @@ def test_duplicate_synthetic_identifiers_are_rejected_by_persisted_constraint(ge
 def test_invalid_admission_discharge_timestamps_are_reported(generation_client):
     _, _, run = create_valid_run(generation_client)
     with generation_client.test_sessions() as db:
-        admission = db.scalar(select(Admission).where(Admission.run_id == run["run_id"]))
-        discharge = db.scalar(select(Discharge).where(Discharge.admission_id == admission.id))
+        admission, discharge = db.execute(
+            select(Admission, Discharge)
+            .join(Discharge, Discharge.admission_id == Admission.id)
+            .where(Admission.run_id == run["run_id"])
+        ).first()
         discharge.discharged_at = admission.admitted_at - timedelta(hours=1)
         db.commit()
     report = validate(generation_client, run["run_id"])

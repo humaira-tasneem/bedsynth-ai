@@ -13,7 +13,7 @@ from fastapi import HTTPException
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from app.models import Admission, Bed, BedTransfer, Department, Discharge, GenerationRun, Hospital, OccupancySnapshot
+from app.models import Admission, Bed, BedTransfer, BedTurnaround, Department, Discharge, GenerationRun, Hospital, OccupancySnapshot, WaitingQueueEntry
 from app.schemas import AnalyticsComparisonRequest, AnalyticsFilters
 
 SCENARIO_NAMES = {
@@ -272,6 +272,31 @@ def get_run_snapshot_summary(db: Session, run: GenerationRun) -> dict:
     daily, _ = _daily_occupancy(snapshots)
     average, peak, lowest = _occupancy_stats(daily)
     latest = daily[-1] if daily else None
+    waiting_metrics = {
+        "waiting_requests": None, "assigned_immediately": None, "patients_who_waited": None,
+        "unresolved_requests": None, "average_wait_seconds": None, "maximum_wait_seconds": None,
+    }
+    if run.waiting_queue_count is not None:
+        requests = list(db.scalars(select(WaitingQueueEntry).where(WaitingQueueEntry.run_id == run.run_id)).all())
+        assigned = [row for row in requests if row.status == "assigned" and row.waiting_duration_seconds is not None]
+        waits = [row.waiting_duration_seconds for row in assigned]
+        waiting_metrics = {
+            "waiting_requests": len(requests),
+            "assigned_immediately": sum(value == 0 for value in waits),
+            "patients_who_waited": sum(value > 0 for value in waits),
+            "unresolved_requests": sum(row.status != "assigned" for row in requests),
+            "average_wait_seconds": sum(waits) / len(waits) if waits else 0.0,
+            "maximum_wait_seconds": max(waits, default=0),
+        }
+    turnaround_metrics = {"turnaround_events": None, "average_turnaround_seconds": None, "turnaround_bed_hours": None}
+    if run.bed_turnaround_count is not None:
+        rows = list(db.scalars(select(BedTurnaround).where(BedTurnaround.run_id == run.run_id)).all())
+        durations = [row.duration_seconds for row in rows]
+        turnaround_metrics = {
+            "turnaround_events": len(rows),
+            "average_turnaround_seconds": sum(durations) / len(durations) if durations else 0.0,
+            "turnaround_bed_hours": sum(durations) / 3600,
+        }
     return {
         "latest_snapshot_date": latest["date"] if latest else None,
         "latest_occupancy_pct": latest["occupancy_pct"] if latest else None,
@@ -281,6 +306,8 @@ def get_run_snapshot_summary(db: Session, run: GenerationRun) -> dict:
         "occupied_beds_latest": latest["occupied_beds"] if latest else None,
         "available_beds_latest": latest["available_beds"] if latest else None,
         "recorded_days": len(daily),
+        **waiting_metrics,
+        **turnaround_metrics,
     }
 
 

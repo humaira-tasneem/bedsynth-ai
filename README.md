@@ -6,7 +6,7 @@ BedSynth AI is a synthetic hospital operations data platform for exercising bed 
 
 - **Frontend:** Next.js App Router, React, TypeScript, Tailwind CSS, Recharts, and Lucide.
 - **Backend:** FastAPI, Pydantic, SQLAlchemy, and SQLite.
-- **Generation:** deterministic, hospital-scoped generation with five scenarios, configurable fictional age/gender profiles, a preview and validation step, explicit confirmation, preview freshness checks, and idempotency.
+- **Generation:** deterministic, hospital-scoped generation with five scenarios, configurable fictional age/gender and fixed/variable length-of-stay profiles, a preview and validation step, explicit confirmation, preview freshness checks, and idempotency.
 - **Other features:** workspace and hospital configuration, bulk bed creation, dataset history/details/CSV export, data validation, operational analytics, and an optional Gemini configuration assistant.
 
 See [backend/README.md](backend/README.md) for the API routes, generation and analytics semantics, database notes, and environment variables. The approved hospital domain is documented in [HOSPITAL_DOMAIN_SPECIFICATION.md](docs/architecture/HOSPITAL_DOMAIN_SPECIFICATION.md).

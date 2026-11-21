@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.routes import get_db
 from app.schemas import DatasetLibraryRead, DatasetPreviewRead, DatasetRunDetailRead
-from app.services.datasets import dataset_manifest, get_dataset_detail, list_datasets, preview_dataset_entity, stream_entity_csv
+from app.services.datasets import dataset_manifest, get_dataset_detail, list_datasets, preview_dataset_entity, stream_bed_inventory_csv, stream_entity_csv
 
 router = APIRouter(prefix="/api/v1", tags=["datasets"])
 
@@ -48,7 +48,7 @@ def dataset_preview(
 
 @router.get("/generation-runs/{run_id}/dataset/export/{entity}")
 def export_dataset_entity(run_id: str, entity: str, db: Session = Depends(get_db)) -> StreamingResponse:
-    rows = stream_entity_csv(db, run_id, entity)
+    rows = stream_bed_inventory_csv(db, run_id) if entity == "bed_inventory" else stream_entity_csv(db, run_id, entity)
     return StreamingResponse(
         rows,
         media_type="text/csv",

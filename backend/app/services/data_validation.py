@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.models import (
     Admission, Bed, BedAssignment, BedTransfer, Department, Discharge,
-    GenerationRun, Hospital, OccupancySnapshot, SyntheticPatient,
+    GenerationRun, Hospital, OccupancySnapshot, SyntheticPatient, WaitingQueueEntry, BedTurnaround,
     ValidationReport,
 )
 
@@ -50,6 +50,8 @@ def evaluate_run(db: Session, run_id: str) -> dict:
     assignments = rows(BedAssignment)
     transfers = rows(BedTransfer)
     snapshots = rows(OccupancySnapshot)
+    queue_entries = rows(WaitingQueueEntry)
+    turnarounds = rows(BedTurnaround)
     hospital = db.get(Hospital, run.hospital_id)
     patient_by_id = {row.id: row for row in patients}
     admission_by_id = {row.id: row for row in admissions}
@@ -71,7 +73,9 @@ def evaluate_run(db: Session, run_id: str) -> dict:
           and all(x.synthetic_patient_id for x in patients), "One or more required record identifiers are missing.", severity="critical")
     check("completeness", "run_counts", len(patients) == run.patients_count and len(admissions) == run.admissions_count
           and len(discharges) == run.discharges_count and len(transfers) == run.transfers_count
-          and len(snapshots) == run.snapshots_count, "Persisted record counts do not match the generation run metadata.", severity="medium", entity_type="generation_run", entity_id=run_id)
+          and len(snapshots) == run.snapshots_count
+          and (run.waiting_queue_count is None or len(queue_entries) == run.waiting_queue_count)
+          and (run.bed_turnaround_count is None or len(turnarounds) == run.bed_turnaround_count), "Persisted record counts do not match the generation run metadata.", severity="medium", entity_type="generation_run", entity_id=run_id)
     requested_profile = ((run.config or {}).get("request") or {}).get("patient_profile")
     profile_fields_valid = True
     if requested_profile:
@@ -103,13 +107,15 @@ def evaluate_run(db: Session, run_id: str) -> dict:
 
     # Referential integrity includes ownership scope, not only existence.
     scope_ok = bool(hospital and hospital.workspace_id == run.workspace_id)
-    scope_ok = scope_ok and all(x.run_id == run_id and x.workspace_id == run.workspace_id and x.hospital_id == run.hospital_id for group in (patients, admissions, discharges, assignments, transfers, snapshots) for x in group)
+    scope_ok = scope_ok and all(x.run_id == run_id and x.workspace_id == run.workspace_id and x.hospital_id == run.hospital_id for group in (patients, admissions, discharges, assignments, transfers, snapshots, queue_entries, turnarounds) for x in group)
     check("referential_integrity", "workspace_hospital_run_scope", scope_ok,
           "Run records do not consistently belong to the run's workspace and hospital.", severity="critical")
     patient_refs_ok = all(x.patient_id in patient_by_id for x in admissions)
     check("referential_integrity", "admission_patient", patient_refs_ok, "An admission references a missing patient in this run.", severity="critical")
     admission_refs_ok = all(x.admission_id in admission_by_id for group in (discharges, assignments, transfers) for x in group)
     check("referential_integrity", "operational_admission", admission_refs_ok, "An operational record references a missing admission in this run.", severity="critical")
+    check("referential_integrity", "queue_request_scope", all(row.patient_id in patient_by_id and row.department_id in departments for row in queue_entries), "A queue request references a missing patient or a department outside the hospital.", severity="critical")
+    check("referential_integrity", "turnaround_assignment", all(any(a.id == row.assignment_id and a.admission_id == row.admission_id and a.bed_id == row.bed_id and a.department_id == row.department_id for a in assignments) for row in turnarounds), "A turnaround record does not match its vacated assignment and ownership.", severity="critical")
     bed_refs_ok = all(x.bed_id in beds for x in assignments) and all(x.initial_bed_id in beds for x in admissions) and all(x.source_bed_id in beds and x.destination_bed_id in beds for x in transfers)
     check("referential_integrity", "hospital_bed", bed_refs_ok, "An admission, assignment, or transfer references a missing or foreign-hospital bed.", severity="critical")
     dept_refs_ok = all(x.department_id in departments for x in assignments) and all(x.department_id in departments for x in snapshots) and all(x.department_id in departments for x in admissions)
@@ -134,7 +140,7 @@ def evaluate_run(db: Session, run_id: str) -> dict:
         admission = admission_by_id.get(assignment.admission_id)
         temporal_ok = temporal_ok and bool(assignment.start_at is not None and (assignment.end_at is None or assignment.end_at > assignment.start_at))
         if admission:
-            temporal_ok = temporal_ok and assignment.start_at >= admission.admitted_at
+            temporal_ok = temporal_ok and assignment.start_at >= (admission.bed_assigned_at or admission.admitted_at)
             discharge = discharge_by_admission.get(admission.id)
             if discharge:
                 temporal_ok = temporal_ok and (assignment.end_at is None or assignment.end_at <= discharge.discharged_at)
@@ -156,6 +162,75 @@ def evaluate_run(db: Session, run_id: str) -> dict:
           "Admission status and its discharge record do not agree.", severity="high")
     check("temporal_validity", "snapshot_timestamps", all(x.snapshot_at is not None for x in snapshots),
           "An occupancy snapshot has no timestamp.", severity="high")
+    queue_ok = len({row.request_number for row in queue_entries}) == len(queue_entries)
+    for row in queue_entries:
+        if row.status == "assigned":
+            queue_ok = queue_ok and row.admission_id in admission_by_id and row.bed_assigned_at is not None and row.waiting_duration_seconds is not None
+            if row.bed_assigned_at is not None:
+                queue_ok = queue_ok and row.bed_assigned_at >= row.requested_at
+            if row.waiting_duration_seconds is not None and row.bed_assigned_at is not None:
+                queue_ok = queue_ok and row.waiting_duration_seconds >= 0 and row.waiting_duration_seconds == round((row.bed_assigned_at - row.requested_at).total_seconds())
+        else:
+            queue_ok = queue_ok and row.status in {"waiting", "max_wait_exceeded"} and row.admission_id is None and row.bed_assigned_at is None and row.waiting_duration_seconds is None and bool(row.outcome_reason)
+    check("temporal_validity", "waiting_queue_status_and_duration", queue_ok, "A queue outcome has an invalid status, assignment link, or waiting duration.", severity="critical")
+    turnaround_ok = True
+    assignment_by_id = {row.id: row for row in assignments}
+    for row in turnarounds:
+        assignment = assignment_by_id.get(row.assignment_id)
+        turnaround_ok = turnaround_ok and bool(assignment and assignment.end_at == row.started_at and row.completed_at > row.started_at and row.duration_seconds == round((row.completed_at - row.started_at).total_seconds()))
+        turnaround_ok = turnaround_ok and not any(
+            other.bed_id == row.bed_id and other.id != row.assignment_id
+            and row.started_at <= other.start_at < row.completed_at
+            for other in assignments
+        )
+    turnarounds_by_bed = defaultdict(list)
+    for row in turnarounds:
+        turnarounds_by_bed[row.bed_id].append(row)
+    for group in turnarounds_by_bed.values():
+        group.sort(key=lambda row: row.started_at)
+        turnaround_ok = turnaround_ok and all(a.completed_at <= b.started_at for a, b in zip(group, group[1:]))
+    check("bed_assignment_consistency", "turnaround_intervals", turnaround_ok, "Turnaround intervals overlap or do not begin at the associated assignment end.", severity="critical")
+    assignment_after_request = all(a.bed_assigned_at is None or a.bed_assigned_at >= (a.requested_at or a.admitted_at) for a in admissions)
+    check("temporal_validity", "assignment_after_request", assignment_after_request, "A bed was assigned before the admission request.", severity="critical")
+
+    # LOS checks apply only to runs that explicitly persisted this configuration.
+    # Historical rows without a profile remain unavailable rather than inferred.
+    request_config = ((run.config or {}).get("request") or {})
+    global_los_profile = request_config.get("length_of_stay_profile")
+    los_profile_ok = True
+    if isinstance(global_los_profile, dict):
+        department_los_profiles = {
+            item.get("department_id"): item
+            for item in request_config.get("department_length_of_stay_profiles", [])
+            if isinstance(item, dict)
+        }
+        start_date = request_config.get("start_date")
+        end_date = request_config.get("end_date")
+        try:
+            window_start = datetime.fromisoformat(start_date) if start_date else None
+            window_end = datetime.fromisoformat(end_date).replace(hour=23, minute=59, second=59) if end_date else None
+        except (TypeError, ValueError):
+            window_start = window_end = None
+            los_profile_ok = False
+        for admission in admissions:
+            profile = department_los_profiles.get(admission.department_id, global_los_profile)
+            discharge = discharge_by_admission.get(admission.id)
+            if not isinstance(profile, dict) or window_start is None or window_end is None:
+                los_profile_ok = False
+                continue
+            if not (profile.get("minimum_days", 0) <= profile.get("mode_days", 0) <= profile.get("maximum_days", 0)):
+                los_profile_ok = False
+            if admission.admitted_at < window_start or admission.admitted_at > window_end:
+                los_profile_ok = False
+            if discharge:
+                duration_days = (discharge.discharged_at - (admission.bed_assigned_at or admission.admitted_at)).total_seconds() / 86_400
+                los_profile_ok = los_profile_ok and profile.get("minimum_days", 0) <= duration_days <= profile.get("maximum_days", 0)
+                los_profile_ok = los_profile_ok and discharge.discharged_at <= window_end
+            else:
+                episode_assignments = sorted((row for row in assignments if row.admission_id == admission.id), key=lambda row: row.start_at)
+                los_profile_ok = los_profile_ok and bool(episode_assignments and episode_assignments[-1].end_at is None)
+    check("temporal_validity", "configured_length_of_stay", los_profile_ok,
+          "A generated stay violates its configured bounds or observation-window lifecycle.", severity="high")
 
     # Assignment intervals are half-open [start_at, end_at): an end exactly at
     # the next start is valid. Both patient and bed may have only one active
@@ -179,7 +254,7 @@ def evaluate_run(db: Session, run_id: str) -> dict:
           "Bed assignments overlap for a bed or an admission.", severity="critical")
     check("bed_assignment_consistency", "assignment_bed_operational", current_beds_ok,
           "An assignment uses a bed that is currently not operational; historical bed-status changes are not versioned.", severity="low")
-    initial_assignments_ok = all(any(a.admission_id == admission.id and a.bed_id == admission.initial_bed_id and a.start_at == admission.admitted_at for a in assignments) for admission in admissions)
+    initial_assignments_ok = all(any(a.admission_id == admission.id and a.bed_id == admission.initial_bed_id and a.start_at == (admission.bed_assigned_at or admission.admitted_at) for a in assignments) for admission in admissions)
     check("bed_assignment_consistency", "initial_assignment", initial_assignments_ok,
           "An admission does not begin with an assignment to its initial bed.", severity="high")
 
