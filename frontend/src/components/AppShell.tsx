@@ -3,16 +3,17 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { AnimatePresence, MotionConfig, motion } from "framer-motion";
 import { backendHealthLabel } from "@/lib/assistant-status.mjs";
 import {
-  Activity, BarChart3, BedDouble, Building2, ChevronDown, Database,
+  Activity, BarChart3, Building2, ChevronDown, Database, LogOut, UserRoundCog,
   FlaskConical, LayoutDashboard, Menu, Moon, PanelLeftClose,
   PanelLeftOpen, ShieldCheck, Sparkles, Sun, X,
 } from "lucide-react";
 
 const apiBase = (process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
-const navigationGroups = [
+const adminNavigationGroups = [
   { label: "WORKSPACE", items: [
     { href: "/", label: "Dashboard", icon: LayoutDashboard },
     { href: "/hospitals", label: "Hospital Setup", icon: Building2 },
@@ -26,23 +27,51 @@ const navigationGroups = [
     { href: "/datasets", label: "Datasets", icon: Database },
     { href: "/validation", label: "Data validation", icon: ShieldCheck },
   ] },
+  { label: "ADMINISTRATION", items: [{ href: "/users", label: "User Management", icon: UserRoundCog }] },
   { label: "PREFERENCES", items: [
     { href: "/settings", label: "Settings", icon: Activity },
   ] },
 ];
-const navigation = navigationGroups.flatMap((group) => group.items);
+const userNavigationGroups = [
+  { label: "WORKSPACE", items: [{ href: "/", label: "Dashboard", icon: LayoutDashboard }, { href: "/hospitals", label: "Shared Hospitals", icon: Building2 }] },
+  { label: "DATA GENERATION", items: [{ href: "/generate", label: "Generate Dataset", icon: FlaskConical }, { href: "/assistant", label: "AI Assistant", icon: Sparkles }] },
+  { label: "MY DATA", items: [{ href: "/datasets", label: "My Datasets", icon: Database }, { href: "/analytics", label: "My Analytics", icon: BarChart3 }, { href: "/validation", label: "Data validation", icon: ShieldCheck }] },
+  { label: "PREFERENCES", items: [{ href: "/settings", label: "Settings", icon: Activity }] },
+];
 
-function routeLabel(pathname: string) {
+function routeLabel(pathname: string, navigation: { href: string; label: string }[]) {
   if (pathname.startsWith("/datasets/")) return "Dataset details";
   return navigation.find((item) => item.href === pathname)?.label ?? "Workspace";
 }
 
 export default function AppShell({ children }: Readonly<{ children: React.ReactNode }>) {
   const pathname = usePathname();
+  const router = useRouter();
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [dark, setDark] = useState(false);
   const [health, setHealth] = useState<"checking" | "online" | "offline">("checking");
+  const [identity, setIdentity] = useState<{ id: number; email: string; role: "admin" | "user" } | null>(null);
+  const [authChecked, setAuthChecked] = useState(false);
+  const isAuthPage = pathname === "/login" || pathname === "/register";
+  const navigationGroups = identity?.role === "admin" ? adminNavigationGroups : userNavigationGroups;
+  const navigation = navigationGroups.flatMap((group) => group.items);
+
+  useEffect(() => {
+    let active = true;
+    fetch(`${apiBase}/api/v1/auth/me`, { credentials: "include", cache: "no-store" })
+      .then((response) => response.ok ? response.json() : null)
+      .then((user) => { if (active) { setIdentity(user); setAuthChecked(true); } })
+      .catch(() => { if (active) { setIdentity(null); setAuthChecked(true); } });
+    return () => { active = false; };
+  }, [pathname]);
+
+  useEffect(() => {
+    if (!authChecked) return;
+    if (!identity && !isAuthPage) router.replace("/login");
+    if (identity && isAuthPage) router.replace("/");
+    if (identity?.role === "user" && pathname === "/users") router.replace("/");
+  }, [authChecked, identity, isAuthPage, router]);
 
   useEffect(() => {
     setCollapsed(window.localStorage.getItem("bedsynth-sidebar-collapsed") === "true");
@@ -97,6 +126,15 @@ export default function AppShell({ children }: Readonly<{ children: React.ReactN
     window.localStorage.setItem("bedsynth-theme", next ? "dark" : "light");
   }
 
+  if (!authChecked || (!identity && !isAuthPage)) return <main className="auth-loading" role="status">Checking your secure session…</main>;
+  if (isAuthPage) return <>{children}</>;
+
+  async function logout() {
+    await fetch(`${apiBase}/api/v1/auth/logout`, { method: "POST", credentials: "include" });
+    setIdentity(null);
+    router.replace("/login");
+  }
+
   return <div className={`product-shell${collapsed ? " is-collapsed" : ""}`}>
     {mobileOpen && <button className="product-backdrop" type="button" aria-label="Close navigation" onClick={() => setMobileOpen(false)} />}
     <aside className={`product-sidebar${mobileOpen ? " is-open" : ""}`} aria-label="Main navigation">
@@ -121,6 +159,7 @@ export default function AppShell({ children }: Readonly<{ children: React.ReactN
       </nav>
       <div className="product-sidebar-footer">
         <div className="product-privacy"><ShieldCheck size={17} /><span>PRIVACY &amp; DATA SAFETY<br /><strong>No patient data connected</strong></span></div>
+        <div className="product-user-identity"><span className="product-workspace-avatar">{identity?.email.slice(0, 1).toUpperCase()}</span><span className="product-workspace-copy"><small>{identity?.role === "admin" ? "ADMINISTRATOR" : "USER"}</small><strong>{identity?.email}</strong></span><button className="product-icon-button" type="button" onClick={logout} aria-label="Sign out" title="Sign out"><LogOut size={17} /></button></div>
       </div>
     </aside>
 
@@ -128,7 +167,7 @@ export default function AppShell({ children }: Readonly<{ children: React.ReactN
       <header className="product-topbar">
         <div className="product-topbar-leading">
           <button type="button" className="product-icon-button product-menu" onClick={() => setMobileOpen(true)} aria-label="Open navigation"><Menu size={20} /></button>
-          <div className="product-breadcrumb"><span>Workspace</span><span aria-hidden="true">/</span><strong>{routeLabel(pathname)}</strong></div>
+          <div className="product-breadcrumb"><span>Workspace</span><span aria-hidden="true">/</span><strong>{routeLabel(pathname, navigation)}</strong></div>
         </div>
         <div className="product-topbar-actions"><div className={`product-health health-${health}`} role="status" aria-live="polite"><i />{backendHealthLabel(health)}</div><button type="button" className="product-icon-button product-theme" onClick={toggleTheme} aria-label={`Switch to ${dark ? "light" : "dark"} theme`} title={`Switch to ${dark ? "light" : "dark"} theme`}>{dark ? <Sun size={18} /> : <Moon size={18} />}</button></div>
       </header>

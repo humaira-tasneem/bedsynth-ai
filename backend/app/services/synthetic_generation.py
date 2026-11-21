@@ -804,7 +804,7 @@ def _write_generation_data(db: Session, run: GenerationRun, config: GenerationCo
     run.bed_turnaround_count = len(turnarounds)
 
 
-def generate_dataset(db: Session, hospital_id: int, payload: GenerationCreate) -> GenerationRun:
+def generate_dataset(db: Session, hospital_id: int, payload: GenerationCreate, *, owner_user_id: int | None = None) -> GenerationRun:
     key = str(payload.idempotency_key)
     config = GenerationConfig.model_validate(payload.model_dump(exclude={"idempotency_key", "preview_token"}))
     requested = _requested_config(config)
@@ -817,7 +817,7 @@ def generate_dataset(db: Session, hospital_id: int, payload: GenerationCreate) -
             GenerationRun.idempotency_key == key,
         ))
         if existing is not None:
-            if existing.hospital_id != hospital.id or existing.config.get("request") != requested:
+            if existing.hospital_id != hospital.id or existing.config.get("request") != requested or (owner_user_id is not None and existing.owner_user_id != owner_user_id):
                 db.rollback()
                 raise HTTPException(status_code=409, detail="This idempotency key was already used with a different configuration.")
             db.rollback()
@@ -876,6 +876,7 @@ def generate_dataset(db: Session, hospital_id: int, payload: GenerationCreate) -
             run_id=str(uuid4()),
             workspace_id=hospital.workspace_id,
             hospital_id=hospital.id,
+            owner_user_id=owner_user_id,
             idempotency_key=key,
             config=effective_config,
             seed=config.seed,

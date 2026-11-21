@@ -20,12 +20,12 @@ See [backend/README.md](backend/README.md) for the API routes, generation and an
 
 ## Local setup
 
-Create the backend environment and install the declared runtime and test dependencies:
+Use the project Python 3.13.5 environment (`backend/.venv313`). On a new machine, create it with a supported Python 3.13 interpreter and install the declared dependencies:
 
 ```powershell
 cd backend
-py -3.11 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+py -3.13 -m venv .venv313
+.\.venv313\Scripts\python.exe -m pip install -r requirements-dev.txt
 Copy-Item .env.example .env
 ```
 
@@ -47,7 +47,7 @@ Start the backend from its directory:
 
 ```powershell
 cd backend
-.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+.\.venv313\Scripts\python.exe -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 Start the frontend from another terminal:
@@ -64,7 +64,7 @@ Open `http://localhost:3000`. Backend health is available at `http://127.0.0.1:8
 From `backend`:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest
+.\.venv313\Scripts\python.exe -m pytest
 ```
 
 From `frontend`:
@@ -85,9 +85,11 @@ The backend test suite uses an isolated temporary database. Do not point it at t
 
 The assistant only proposes and validates generation configuration; it does not create records. Its handoff still goes through Generator preview and separate confirmation. Do not send patient information to the assistant. The current high-signal text filter is not a general-purpose PHI detector.
 
-## Security and scope limitations
+## Authentication and roles
 
-The current application has no authentication or authorization. Workspace and hospital IDs scope data relationships and route queries, but IDs do not prove that a caller is entitled to access a workspace. Do not expose this application as a multi-user or production service until identity, authorization, tenant isolation, deployment secret management, and operational controls are implemented and reviewed.
+The application supports `admin` and `user` roles with hashed passwords and opaque HTTP-only cookie sessions. New sign-ups are standard users. Bootstrap an administrator interactively from `backend` using `python -m app.auth_cli create-admin`; the CLI has no default credentials. Administrators explicitly share workspaces before users can see the hospitals in them. Standard users can generate data and access, export, compare, validate, or soft-delete only the generation runs they own. Historical runs remain unowned and administrator-only. Hospital, department, bed, user, and workspace-sharing management is administrator-only, enforced by the API as well as the role-aware UI.
+
+Cookie deployment settings and additive schema behavior are documented in [backend/README.md](backend/README.md). For a cross-site deployment, configure exact frontend origins and secure `SameSite=None` cookies. Authentication does not replace HTTPS, database backups, secret management, monitoring, or a production security review.
 
 Generated patients and operational events are fictional. Current analytics are operational summaries of synthetic data; they are not clinical quality measures, statistical utility evaluations, privacy-risk evaluations, or evidence that a scheduling model is safe or effective. Cross-hospital generation orchestration, asynchronous jobs, statistical utility/privacy-risk scoring, and model benchmarking are not current capabilities.
 
@@ -99,4 +101,4 @@ frontend/   Next.js application and UI
 docs/       Product and architecture documentation
 ```
 
-There is no authentication service, external job queue, or deployment configuration in the current MVP. See the backend guide for the complete current API surface and known analytics/generation semantics.
+There is no external job queue or deployment configuration in the current MVP. See the backend guide for the complete current API surface and known analytics/generation semantics.

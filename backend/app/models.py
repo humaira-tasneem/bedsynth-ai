@@ -17,6 +17,7 @@ class Workspace(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
+    is_shared: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
     hospitals: Mapped[list["Hospital"]] = relationship(back_populates="workspace")
     networks: Mapped[list["HospitalNetwork"]] = relationship(back_populates="workspace")
@@ -51,6 +52,31 @@ class Hospital(Base):
     network: Mapped[HospitalNetwork | None] = relationship(back_populates="hospitals")
     departments: Mapped[list["Department"]] = relationship(back_populates="hospital", order_by="Department.name")
     beds: Mapped[list["Bed"]] = relationship(back_populates="hospital")
+
+
+class User(Base):
+    __tablename__ = "users"
+    __table_args__ = (CheckConstraint("role IN ('admin', 'user')", name="ck_user_role"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    email: Mapped[str] = mapped_column(String(254, collation="NOCASE"), unique=True, nullable=False, index=True)
+    password_hash: Mapped[str] = mapped_column(String(256), nullable=False)
+    role: Mapped[str] = mapped_column(String(16), nullable=False, default="user", index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    sessions: Mapped[list["UserSession"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    generation_runs: Mapped[list["GenerationRun"]] = relationship(back_populates="owner")
+
+
+class UserSession(Base):
+    __tablename__ = "user_sessions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    user: Mapped[User] = relationship(back_populates="sessions")
 
 
 class Department(Base):
@@ -98,6 +124,8 @@ class GenerationRun(Base):
     run_id: Mapped[str] = mapped_column(String(36), primary_key=True)
     workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id", ondelete="RESTRICT"), nullable=False, index=True)
     hospital_id: Mapped[int] = mapped_column(ForeignKey("hospitals.id", ondelete="RESTRICT"), nullable=False, index=True)
+    owner_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     idempotency_key: Mapped[str] = mapped_column(String(36), nullable=False)
     config: Mapped[dict] = mapped_column(JSON, nullable=False)
     seed: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -116,6 +144,7 @@ class GenerationRun(Base):
     admissions: Mapped[list["Admission"]] = relationship(back_populates="run")
     occupancy_snapshots: Mapped[list["OccupancySnapshot"]] = relationship(back_populates="run")
     validation_reports: Mapped[list["ValidationReport"]] = relationship(back_populates="run")
+    owner: Mapped[User | None] = relationship(back_populates="generation_runs")
 
 
 class SyntheticPatient(Base):

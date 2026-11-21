@@ -1,6 +1,5 @@
 """REST endpoints for workspace-scoped Hospital Studio configuration."""
 
-from collections.abc import Generator
 import hashlib
 import json
 import re
@@ -10,7 +9,8 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session, selectinload
 
-from app.database import SessionLocal
+from app.database import get_db
+from app.auth import current_user, enforce_role_by_method, resource_access
 from app.models import Bed, Department, GenerationRun, Hospital, HospitalNetwork, ValidationReport, Workspace
 from app.schemas import (
     BedGenerationDepartmentResult,
@@ -41,15 +41,7 @@ from app.schemas import (
 from app.services.synthetic_generation import generate_dataset, preview_generation
 from app.services.data_validation import persist_validation
 
-router = APIRouter(prefix="/api/v1", tags=["hospital-studio"])
-
-
-def get_db() -> Generator[Session, None, None]:
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+router = APIRouter(prefix="/api/v1", tags=["hospital-studio"], dependencies=[Depends(current_user), Depends(enforce_role_by_method), Depends(resource_access)])
 
 
 def _commit(db: Session, conflict: str = "This record conflicts with an existing identifier.") -> None:
@@ -204,8 +196,11 @@ def _generation_preview(hospital_id: int, plan: list[dict], token: str) -> BedGe
 
 
 @router.get("/workspaces", response_model=list[WorkspaceRead])
-def list_workspaces(db: Session = Depends(get_db)) -> list[Workspace]:
-    return list(db.scalars(select(Workspace).order_by(Workspace.id)).all())
+def list_workspaces(user=Depends(current_user), db: Session = Depends(get_db)) -> list[Workspace]:
+    query = select(Workspace)
+    if user.role != "admin":
+        query = query.where(Workspace.is_shared.is_(True))
+    return list(db.scalars(query.order_by(Workspace.id)).all())
 
 
 @router.post("/workspaces", response_model=WorkspaceRead, status_code=201)
@@ -218,11 +213,11 @@ def create_workspace(payload: WorkspaceCreate, db: Session = Depends(get_db)) ->
 
 
 @router.get("/workspaces/{workspace_id}/networks", response_model=list[NetworkRead])
-def list_networks(workspace_id: int, include_archived: bool = False, db: Session = Depends(get_db)) -> list[HospitalNetwork]:
+def list_networks(workspace_id: int, include_archived: bool = False, db: Session = Depends(get_db), user=Depends(current_user)) -> list[HospitalNetwork]:
     if db.get(Workspace, workspace_id) is None:
         raise HTTPException(status_code=404, detail="Workspace not found.")
     query = select(HospitalNetwork).where(HospitalNetwork.workspace_id == workspace_id)
-    if not include_archived:
+    if not include_archived or user.role != "admin":
         query = query.where(HospitalNetwork.is_archived.is_(False))
     return list(db.scalars(query.order_by(HospitalNetwork.name)).all())
 
@@ -243,13 +238,15 @@ def list_hospitals(
     workspace_id: int,
     include_archived: bool = Query(default=False),
     db: Session = Depends(get_db),
+    user=Depends(current_user),
 ) -> list[Hospital]:
     if db.get(Workspace, workspace_id) is None:
         raise HTTPException(status_code=404, detail="Workspace not found.")
-    query = select(Hospital).where(Hospital.workspace_id == workspace_id).options(
-        selectinload(Hospital.departments).selectinload(Department.beds)
-    )
-    if not include_archived:
+    hospital_load = selectinload(Hospital.departments).selectinload(Department.beds)
+    if user.role != "admin":
+        hospital_load = selectinload(Hospital.departments.and_(Department.is_archived.is_(False))).selectinload(Department.beds.and_(Bed.status != "retired"))
+    query = select(Hospital).where(Hospital.workspace_id == workspace_id).options(hospital_load)
+    if not include_archived or user.role != "admin":
         query = query.where(Hospital.is_archived.is_(False))
     return list(db.scalars(query.order_by(Hospital.name)).all())
 
@@ -266,8 +263,11 @@ def create_hospital(workspace_id: int, payload: HospitalCreate, db: Session = De
 
 
 @router.get("/workspaces/{workspace_id}/hospitals/{hospital_id}", response_model=HospitalRead)
-def get_hospital(workspace_id: int, hospital_id: int, db: Session = Depends(get_db)) -> Hospital:
-    return _workspace_hospital_or_404(db, workspace_id, hospital_id)
+def get_hospital(workspace_id: int, hospital_id: int, db: Session = Depends(get_db), user=Depends(current_user)) -> Hospital:
+    hospital = _workspace_hospital_or_404(db, workspace_id, hospital_id)
+    if user.role != "admin" and hospital.is_archived:
+        raise HTTPException(status_code=404, detail="Hospital not found.")
+    return hospital
 
 
 @router.patch("/workspaces/{workspace_id}/hospitals/{hospital_id}", response_model=HospitalRead)
@@ -290,10 +290,10 @@ def update_hospital(
 
 
 @router.get("/hospitals/{hospital_id}/departments", response_model=list[DepartmentRead])
-def list_departments(hospital_id: int, include_archived: bool = False, db: Session = Depends(get_db)) -> list[Department]:
+def list_departments(hospital_id: int, include_archived: bool = False, db: Session = Depends(get_db), user=Depends(current_user)) -> list[Department]:
     _hospital_or_404(db, hospital_id)
     query = select(Department).where(Department.hospital_id == hospital_id).options(selectinload(Department.beds))
-    if not include_archived:
+    if not include_archived or user.role != "admin":
         query = query.where(Department.is_archived.is_(False))
     return list(db.scalars(query.order_by(Department.name)).all())
 
@@ -427,8 +427,9 @@ def create_synthetic_generation(
     hospital_id: int,
     payload: GenerationCreate,
     db: Session = Depends(get_db),
+    user=Depends(current_user),
 ) -> GenerationRun:
-    return generate_dataset(db, hospital_id, payload)
+    return generate_dataset(db, hospital_id, payload, owner_user_id=user.id)
 
 
 @router.get("/workspaces/{workspace_id}/generation-runs", response_model=list[GenerationRunRead])
@@ -437,10 +438,14 @@ def list_generation_runs(
     hospital_id: int | None = None,
     limit: int = Query(default=50, ge=1, le=100),
     db: Session = Depends(get_db),
+    user=Depends(current_user),
 ) -> list[GenerationRun]:
     if db.get(Workspace, workspace_id) is None:
         raise HTTPException(status_code=404, detail="Workspace not found.")
     query = select(GenerationRun).where(GenerationRun.workspace_id == workspace_id)
+    query = query.where(GenerationRun.deleted_at.is_(None))
+    if user.role != "admin":
+        query = query.where(GenerationRun.owner_user_id == user.id)
     if hospital_id is not None:
         query = query.where(GenerationRun.hospital_id == hospital_id)
     return list(db.scalars(query.order_by(GenerationRun.started_at.desc()).limit(limit)).all())

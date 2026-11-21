@@ -18,7 +18,7 @@ type Dataset = {
 type Library = { items: Dataset[]; total: number; page: number; page_size: number; pages: number };
 
 async function api<T>(path: string, signal?: AbortSignal): Promise<T> {
-  const response = await fetch(`${apiBase}/api/v1${path}`, { cache: "no-store", signal });
+  const response = await fetch(`${apiBase}/api/v1${path}`, { cache: "no-store", credentials: "include", signal });
   if (!response.ok) { const body = await response.json().catch(() => null); throw new Error(body?.detail || `Request failed (${response.status}).`); }
   return response.json();
 }

@@ -55,7 +55,7 @@ type Comparison = { baseline_run_id: string; items: ComparedRun[] };
 type Insight = { kind: string; text: string; source: "calculated_rule"; metrics: Record<string, string | number | null> };
 
 async function api<T>(path: string, signal?: AbortSignal): Promise<T> {
-  const response = await fetch(`${apiBase}/api/v1${path}`, { cache: "no-store", signal });
+  const response = await fetch(`${apiBase}/api/v1${path}`, { cache: "no-store", credentials: "include", signal });
   if (!response.ok) {
     const body = await response.json().catch(() => null);
     throw new Error(body?.detail || `Request failed (${response.status}).`);
@@ -63,7 +63,7 @@ async function api<T>(path: string, signal?: AbortSignal): Promise<T> {
   return response.json();
 }
 async function postApi<T>(path: string, body: unknown): Promise<T> {
-  const response = await fetch(`${apiBase}/api/v1${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), cache: "no-store" });
+  const response = await fetch(`${apiBase}/api/v1${path}`, { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), cache: "no-store" });
   const payload = await response.json().catch(() => null);
   if (!response.ok) throw new Error(payload?.detail || `Request failed (${response.status}).`);
   return payload as T;

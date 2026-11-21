@@ -12,7 +12,7 @@ type Library = { items: Dataset[]; total: number; pages: number };
 type DashboardData = { totalRuns: number; exportedRows: number; occupancy: number | null; occupancyDate: string | null; recent: Dataset[] };
 
 async function getJson<T>(path: string): Promise<T> {
-  const response = await fetch(`${apiBase}${path}`, { cache: "no-store" });
+  const response = await fetch(`${apiBase}${path}`, { cache: "no-store", credentials: "include" });
   if (!response.ok) throw new Error(`Request failed (${response.status}).`);
   return response.json();
 }

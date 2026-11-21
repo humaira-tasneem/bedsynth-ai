@@ -12,7 +12,7 @@ type Category = { category: string; weight: number; checks_performed: number; ch
 type Report = { validation_id: string; run_id: string; validated_at: string; score: number; checks_performed: number; checks_passed: number; checks_failed: number; warning_count: number; status: string; categories: Category[]; issues: Issue[] };
 
 async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const response = await fetch(`${apiBase}/api/v1${path}`, { ...options, headers: { "Content-Type": "application/json", ...options.headers }, cache: "no-store" });
+  const response = await fetch(`${apiBase}/api/v1${path}`, { ...options, credentials: "include", headers: { "Content-Type": "application/json", ...options.headers }, cache: "no-store" });
   if (!response.ok) { const body = await response.json().catch(() => null); throw new Error(body?.detail || `Request failed (${response.status})`); }
   return response.json();
 }

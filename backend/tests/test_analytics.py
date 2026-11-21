@@ -4,10 +4,12 @@ from collections.abc import Generator
 from contextlib import asynccontextmanager
 
 import pytest
+from types import SimpleNamespace
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 
+from app.auth import current_user
 from app.database import Base
 from app.main import app
 from app.models import Admission, Bed, BedTransfer, Department, Discharge, GenerationRun, OccupancySnapshot
@@ -35,6 +37,7 @@ def analytics_client(tmp_path) -> Generator[TestClient, None, None]:
     old_lifespan = app.router.lifespan_context
     app.router.lifespan_context = isolated_lifespan
     app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[current_user] = lambda: SimpleNamespace(id=None, role="admin", is_active=True)
     try:
         with TestClient(app) as client:
             client.test_sessions = test_sessions

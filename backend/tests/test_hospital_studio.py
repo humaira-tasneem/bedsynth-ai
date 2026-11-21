@@ -2,11 +2,13 @@ from collections.abc import Generator
 from contextlib import asynccontextmanager
 
 import pytest
+from types import SimpleNamespace
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.auth import current_user
 from app.database import Base
 from app.main import app
 from app.routes import get_db
@@ -30,6 +32,7 @@ def client(tmp_path) -> Generator[TestClient, None, None]:
             db.close()
 
     app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[current_user] = lambda: SimpleNamespace(id=None, role="admin", is_active=True)
     previous_lifespan = app.router.lifespan_context
 
     @asynccontextmanager

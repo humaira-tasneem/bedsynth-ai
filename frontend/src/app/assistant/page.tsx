@@ -44,7 +44,7 @@ class AssistantApiError extends Error {
 const retryableGeminiCategories = new Set(["quota", "timeout", "provider_unavailable", "network_error"]);
 
 async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const response = await fetch(`${apiBase}/api/v1${path}`, { ...options, headers: { "Content-Type": "application/json", ...options.headers }, cache: "no-store" });
+  const response = await fetch(`${apiBase}/api/v1${path}`, { ...options, credentials: "include", headers: { "Content-Type": "application/json", ...options.headers }, cache: "no-store" });
   const body = await response.json().catch(() => null);
   if (!response.ok) {
     const detail = body?.detail;

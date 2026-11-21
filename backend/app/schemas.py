@@ -31,6 +31,36 @@ class WorkspaceRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
     name: str
+    is_shared: bool = False
+
+
+class RegisterRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=12, max_length=128)
+
+
+class LoginRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=1, max_length=128)
+
+
+class UserRead(BaseModel):
+    id: int
+    email: str
+    role: Literal["admin", "user"]
+    is_active: bool
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class UserUpdate(BaseModel):
+    role: Literal["admin", "user"] | None = None
+    is_active: bool | None = None
+
+
+class WorkspaceSharingUpdate(BaseModel):
+    is_shared: bool
 
 
 class NetworkCreate(BaseModel):

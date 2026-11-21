@@ -16,6 +16,7 @@ import {
   Network,
   Plus,
   RotateCcw,
+  ShieldCheck,
   X,
 } from "lucide-react";
 
@@ -39,6 +40,7 @@ type DialogState =
 async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`${apiBase}/api/v1${path}`, {
     ...options,
+    credentials: "include",
     headers: { "Content-Type": "application/json", ...options.headers },
     cache: "no-store",
   });
@@ -138,6 +140,7 @@ export default function HospitalStudioPage() {
   const [success, setSuccess] = useState("");
   const [showArchived, setShowArchived] = useState(false);
   const [working, setWorking] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
   const closeDialog = useCallback(() => setDialog(null), []);
 
   const loadWorkspaceData = useCallback(async (id: number) => {
@@ -154,13 +157,18 @@ export default function HospitalStudioPage() {
     let mounted = true;
     async function initialize() {
       try {
+        const identity = await api<{ role: "admin" | "user" }>("/auth/me");
+        setIsAdmin(identity.role === "admin");
         let currentWorkspaces = await api<Workspace[]>("/workspaces");
         if (currentWorkspaces.length === 0) {
-          await api<Workspace>("/workspaces", { method: "POST", body: JSON.stringify({ name: "My workspace" }) });
-          currentWorkspaces = await api<Workspace[]>("/workspaces");
+          if (identity.role === "admin") {
+            await api<Workspace>("/workspaces", { method: "POST", body: JSON.stringify({ name: "My workspace" }) });
+            currentWorkspaces = await api<Workspace[]>("/workspaces");
+          }
         }
         if (!mounted) return;
         setWorkspaces(currentWorkspaces);
+        if (!currentWorkspaces.length) { setLoading(false); return; }
         const chosen = currentWorkspaces[0];
         setWorkspaceId(chosen.id);
         await loadWorkspaceData(chosen.id);
@@ -255,16 +263,16 @@ export default function HospitalStudioPage() {
   }
 
   return (
-    <main className="studio-page" id="main-content">
+    <main className={`studio-page${isAdmin ? "" : " studio-readonly"}`} id="main-content">
       <div className="studio-topline"><a href="/" className="studio-back"><ArrowLeft size={16} /> Overview</a><span className="studio-topline-label">CONFIGURATION · HOSPITAL STUDIO</span></div>
       <div className="studio-heading"><div><div className="page-kicker"><span className="kicker-line" /> FACILITY CONFIGURATION</div><h1>Hospital Studio</h1><p>Organize hospitals, departments, and bed inventory in your workspace.</p></div><div className="studio-workspace-select"><label htmlFor="workspace-select">WORKSPACE</label><select id="workspace-select" value={workspaceId ?? ""} onChange={(event) => void changeWorkspace(Number(event.target.value))} disabled={workspaces.length < 2}>{workspaces.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}</select><ChevronDown className="select-chevron" size={15} aria-hidden="true" /></div></div>
       {success && <div className="studio-success" role="status"><Check size={17} />{success}</div>}
       {loadError && <div className="studio-load-error" role="alert"><CircleAlert size={17} /><span>{loadError}</span><button onClick={() => workspaceId && void refresh()} className="studio-retry">Retry</button></div>}
 
-      <div className="studio-layout">
+      {!isAdmin && !loading && workspaces.length === 0 ? <div className="studio-empty"><ShieldCheck size={22} /><h2>No shared hospitals yet</h2><p>An administrator must share a workspace with your account before hospital data is visible.</p></div> : <div className="studio-layout">
         <section className="hospital-list-panel" aria-labelledby="hospital-list-title">
-          <div className="studio-panel-heading"><div><h2 id="hospital-list-title">Hospitals</h2><p>{visibleHospitals.length} {visibleHospitals.length === 1 ? "facility" : "facilities"} in this workspace</p></div><button className="studio-square-add" onClick={() => setDialog({ type: "hospital" })} aria-label="Create hospital" title="Create hospital"><Plus size={18} /></button></div>
-          <div className="hospital-list-toolbar"><label className="studio-archived-filter"><input type="checkbox" checked={showArchived} onChange={(event) => setShowArchived(event.target.checked)} /> Show archived</label><button onClick={() => setDialog({ type: "network" })} className="studio-text-action"><Network size={14} /> New network</button></div>
+          <div className="studio-panel-heading"><div><h2 id="hospital-list-title">Hospitals</h2><p>{visibleHospitals.length} {visibleHospitals.length === 1 ? "facility" : "facilities"} in this workspace</p></div>{isAdmin && <button className="studio-square-add" onClick={() => setDialog({ type: "hospital" })} aria-label="Create hospital" title="Create hospital"><Plus size={18} /></button>}</div>
+          {isAdmin && <div className="hospital-list-toolbar"><label className="studio-archived-filter"><input type="checkbox" checked={showArchived} onChange={(event) => setShowArchived(event.target.checked)} /> Show archived</label><button onClick={() => setDialog({ type: "network" })} className="studio-text-action"><Network size={14} /> New network</button></div>}
           {loading ? <div className="studio-state"><LoaderCircle className="spin" size={22} /><span>Loading workspace facilities…</span></div> : visibleHospitals.length === 0 ? <div className="studio-empty"><span className="empty-icon"><Building2 size={21} /></span><h3>No hospitals yet</h3><p>Create a fictional hospital to start configuring its departments and bed inventory.</p><button className="studio-button studio-button-primary" onClick={() => setDialog({ type: "hospital" })}><Plus size={16} /> Create first hospital</button></div> : <div className="hospital-card-list">{visibleHospitals.map((hospital) => {
             const bedCount = hospital.departments.flatMap((department) => department.beds).filter((bed) => bed.status !== "retired").length;
             return <button key={hospital.id} className={`hospital-card ${selectedId === hospital.id ? "hospital-card-selected" : ""} ${hospital.is_archived ? "hospital-card-archived" : ""}`} onClick={() => setSelectedId(hospital.id)} aria-pressed={selectedId === hospital.id}>
@@ -289,7 +297,7 @@ export default function HospitalStudioPage() {
             })}</div>}
           </>}
         </section>
-      </div>
+      </div>}
       <footer className="studio-footer">Hospital records are workspace-owned. Bed capacity and department relationships are validated by the API.</footer>
 
       {dialog?.type === "hospital" && <ModalFrame title={dialog.item ? "Edit hospital" : "Create hospital"} onClose={closeDialog}><HospitalForm item={dialog.item} networks={networks} onClose={closeDialog} onSave={(data) => saveHospital(data, dialog.item)} /></ModalFrame>}

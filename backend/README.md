@@ -8,8 +8,8 @@ From the repository root:
 
 ```powershell
 cd backend
-py -3.11 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+py -3.13 -m venv .venv313
+.\.venv313\Scripts\python.exe -m pip install -r requirements.txt
 Copy-Item .env.example .env
 ```
 
@@ -18,7 +18,7 @@ To install the API test tools as well, use `-m pip install -r requirements-dev.t
 ## Run
 
 ```powershell
-.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+.\.venv313\Scripts\python.exe -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 FastAPI loads `backend/.env` from an absolute path derived from the backend package, so environment loading does not depend on Uvicorn's `--env-file` path or the terminal's current directory. Run the command from `backend` so the default relative SQLite URL continues to use `backend/bedsynth.db`.
@@ -31,6 +31,13 @@ The SQLite database defaults to `backend/bedsynth.db`. Startup creates current t
 ## Main routes
 
 All routes use `/api/v1`:
+
+- `POST /auth/register`, `POST /auth/login`, `POST /auth/logout`, `GET /auth/me`
+- `GET/PATCH /admin/users` and `/admin/users/{user_id}` (administrator only)
+- `GET /admin/workspaces` and `PATCH /admin/workspaces/{workspace_id}/sharing` (administrator only)
+- `DELETE /generation-runs/{run_id}/dataset` (soft-delete an owned run; administrators may manage all runs)
+
+The client sends cookie credentials on API calls. The public `/health` endpoint remains independent of account authentication.
 
 - `GET/POST /workspaces`
 - `GET/POST /workspaces/{workspace_id}/networks`
@@ -98,7 +105,27 @@ The insights endpoint returns deterministic rule-based observations computed onl
 | `GROQ_API_KEY` | unset | Optional backend-only Groq credential; Groq is attempted once as a secondary provider after Gemini fails or is not configured. |
 | `GROQ_MODEL` | `openai/gpt-oss-20b` | Configurable Groq chat-completions model. This default currently supports [Groq strict JSON Schema output](https://console.groq.com/docs/structured-outputs); confirm model support and account access before overriding it. |
 
-This foundation has no authentication yet. Workspace scoping is enforced by route/resource relationships, but access control must be added before exposing it to multiple users or networks.
+### Authentication and access control
+
+The application now uses account authentication with `admin` and `user` roles. New registrations receive the standard `user` role; there is no client-side administrator promotion. Bootstrap the first administrator from the backend directory with an interactive CLI (credentials are entered through prompts and are never supplied as a default):
+
+```powershell
+.\.venv313\Scripts\python.exe -m app.auth_cli create-admin
+```
+
+Then sign in at `/login`. Accounts use scrypt password hashes. Login creates an opaque random session token in an HTTP-only cookie; only its SHA-256 hash is stored in SQLite. The API does not return password hashes or session tokens. Sessions expire after 14 days and are revoked on logout or account deactivation. No credentials are stored in browser local storage.
+
+An administrator can share an existing workspace from **Settings → Shared workspace access**, or use the explicit CLI command:
+
+```powershell
+.\.venv313\Scripts\python.exe -m app.auth_cli share-workspace <workspace-id>
+```
+
+Existing workspaces default to private during the additive migration. Standard users see only shared workspaces and active hospitals within them, can generate datasets, and can access, export, compare, validate, or soft-delete only runs they own. Historical runs without an owner remain available to administrators and are never assigned to a user automatically. Administrators manage hospitals, departments, beds, users, workspace sharing, and can review all runs. Backend checks enforce these rules; hiding controls in the frontend is not the access boundary.
+
+Cookie settings are controlled by `APP_ENV`, `SESSION_COOKIE_SAMESITE`, and `SESSION_COOKIE_SECURE`. Local development defaults to `SameSite=Lax` and insecure cookies for localhost HTTP. For a cross-site hosted frontend/backend, configure `SESSION_COOKIE_SAMESITE=none` and `SESSION_COOKIE_SECURE=true` and set `FRONTEND_ORIGINS` to the exact permitted browser origins (comma-separated). Never use wildcard CORS origins with credentials. Unsafe API requests enforce the configured Origin allowlist; credentialed unsafe requests without an Origin are rejected.
+
+Authentication tables are created additively. SQLite receives nullable `generation_runs.owner_user_id` and `deleted_at` columns and a default-private `workspaces.is_shared` column. Existing generation runs retain a null owner; no run is migrated to a new account. Soft deletion sets `deleted_at` and keeps all operational records. Use a database backup under your normal operational backup procedure before deploying schema changes.
 
 ### Generation assistant
 

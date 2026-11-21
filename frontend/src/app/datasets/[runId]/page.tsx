@@ -2,8 +2,8 @@
 
 import Link from "next/link";
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { useParams } from "next/navigation";
-import { Activity, Download, FileJson2, FileSpreadsheet, LoaderCircle, Search, ShieldCheck } from "lucide-react";
+import { useParams, useRouter } from "next/navigation";
+import { Activity, Download, FileJson2, FileSpreadsheet, LoaderCircle, Search, ShieldCheck, Trash2 } from "lucide-react";
 
 const apiBase = (process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
 const entities = [
@@ -32,7 +32,7 @@ type Preview = { run_id: string; entity: Entity; columns: { key: string; label: 
 type ExportManifest = { exported_files?: { file: string; description: string; record_count: number | null; status: "available" | "unavailable" | "empty" }[] };
 
 async function api<T>(path: string, signal?: AbortSignal): Promise<T> {
-  const response = await fetch(`${apiBase}/api/v1${path}`, { cache: "no-store", signal });
+  const response = await fetch(`${apiBase}/api/v1${path}`, { cache: "no-store", credentials: "include", signal });
   if (!response.ok) { const body = await response.json().catch(() => null); throw new Error(body?.detail || `Request failed (${response.status}).`); }
   return response.json();
 }
@@ -46,6 +46,7 @@ function displayValue(key: string, value: unknown) {
 
 export default function DatasetDetailPage() {
   const params = useParams<{ runId: string }>();
+  const router = useRouter();
   const runId = params.runId;
   const [dataset, setDataset] = useState<Dataset | null>(null);
   const [exportedFiles, setExportedFiles] = useState<ExportManifest["exported_files"]>([]);
@@ -58,6 +59,7 @@ export default function DatasetDetailPage() {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [error, setError] = useState("");
   const [previewError, setPreviewError] = useState("");
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -92,6 +94,16 @@ export default function DatasetDetailPage() {
     event.preventDefault(); setPage(1); setQuery(search.trim());
   }
 
+  async function deleteDataset() {
+    if (!window.confirm("Move this dataset to the deleted state? Its generated records will be retained.")) return;
+    setDeleting(true); setError("");
+    try {
+      const response = await fetch(`${apiBase}/api/v1/generation-runs/${runId}/dataset`, { method: "DELETE", credentials: "include" });
+      if (!response.ok) throw new Error("Dataset could not be deleted.");
+      router.push("/datasets");
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Dataset could not be deleted."); setDeleting(false); }
+  }
+
   const config = dataset?.generation_config ?? {};
   const requestConfig = (config.request && typeof config.request === "object" ? config.request : {}) as Record<string, unknown>;
   const counts = dataset?.record_counts;
@@ -109,7 +121,7 @@ export default function DatasetDetailPage() {
       {loading ? <div className="generator-loading"><LoaderCircle className="generator-spin" />Loading dataset details…</div>
         : error ? <div className="generator-empty"><span className="generator-empty-icon"><FileSpreadsheet size={20} /></span><h2>Dataset unavailable</h2><p>{error}</p><Link href="/datasets" className="generator-button generator-button-secondary">Back to dataset library</Link></div>
         : dataset && <>
-          <div className="dataset-heading"><div><span className="generator-kicker"><FileSpreadsheet size={14} /> DATASET DETAILS</span><h1>{dataset.hospital_name}</h1><p>Generation run <code>{dataset.run_id}</code> · Workspace {dataset.workspace_id}</p></div><div className="dataset-export-actions"><a className="generator-button generator-button-secondary" href={`${apiBase}/api/v1/generation-runs/${runId}/dataset/manifest`}><FileJson2 size={15} /> Download manifest</a>{bedInventoryAvailable && <a className="generator-button generator-button-secondary" href={`${apiBase}/api/v1/generation-runs/${runId}/dataset/export/bed_inventory`}><Download size={15} /> Bed inventory CSV</a>}<span className={`generator-status generator-status-${dataset.status}`}>{dataset.status}</span></div></div>
+          <div className="dataset-heading"><div><span className="generator-kicker"><FileSpreadsheet size={14} /> DATASET DETAILS</span><h1>{dataset.hospital_name}</h1><p>Generation run <code>{dataset.run_id}</code> · Workspace {dataset.workspace_id}</p></div><div className="dataset-export-actions"><a className="generator-button generator-button-secondary" href={`${apiBase}/api/v1/generation-runs/${runId}/dataset/manifest`}><FileJson2 size={15} /> Download manifest</a>{bedInventoryAvailable && <a className="generator-button generator-button-secondary" href={`${apiBase}/api/v1/generation-runs/${runId}/dataset/export/bed_inventory`}><Download size={15} /> Bed inventory CSV</a>}<button type="button" className="generator-button generator-button-secondary" disabled={deleting} onClick={() => void deleteDataset()}><Trash2 size={15} /> {deleting ? "Deleting…" : "Delete dataset"}</button><span className={`generator-status generator-status-${dataset.status}`}>{dataset.status}</span></div></div>
 
           <section className="generator-card dataset-config-card" aria-labelledby="dataset-config-title"><div className="generator-card-header"><span className="generator-section-icon"><Activity size={18} /></span><div><h2 id="dataset-config-title">Generation configuration</h2><p>Persisted run configuration and lifecycle information.</p></div></div><div className="dataset-config-grid">
             <div><span>Hospital</span><strong>{dataset.hospital_name}</strong></div><div><span>Scenario</span><strong>{(dataset.scenario_name ?? "Unavailable")}</strong></div><div><span>Seed</span><strong>{dataset.seed}</strong></div><div><span>Configured dates</span><strong>{dataset.configured_start_date ?? "—"} – {dataset.configured_end_date ?? "—"}</strong></div><div><span>Target occupancy</span><strong>{dataset.target_occupancy_pct === null ? "—" : `${dataset.target_occupancy_pct}%`}</strong></div><div><span>Target admissions</span><strong>{String(requestConfig.target_admissions ?? "—")}</strong></div><div><span>Generation version</span><strong>{dataset.generator_version ?? "Not recorded"}</strong></div><div><span>Started</span><strong>{new Date(dataset.started_at).toLocaleString()}</strong></div><div><span>Completed</span><strong>{dataset.completed_at ? new Date(dataset.completed_at).toLocaleString() : "—"}</strong></div>

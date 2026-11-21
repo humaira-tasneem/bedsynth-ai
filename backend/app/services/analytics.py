@@ -48,7 +48,7 @@ def _run_period(run: GenerationRun | None) -> tuple[date | None, date | None]:
         return None, None
 
 
-def _context(db: Session, hospital_id: int, filters: AnalyticsFilters) -> dict:
+def _context(db: Session, hospital_id: int, filters: AnalyticsFilters, owner_user_id: int | None = None) -> dict:
     hospital = db.get(Hospital, hospital_id)
     if hospital is None:
         raise HTTPException(status_code=404, detail="Hospital not found.")
@@ -64,7 +64,10 @@ def _context(db: Session, hospital_id: int, filters: AnalyticsFilters) -> dict:
     run_query = select(GenerationRun).where(
         GenerationRun.hospital_id == hospital_id,
         GenerationRun.status == "completed",
+        GenerationRun.deleted_at.is_(None),
     ).order_by(GenerationRun.completed_at.desc(), GenerationRun.started_at.desc())
+    if owner_user_id is not None:
+        run_query = run_query.where(GenerationRun.owner_user_id == owner_user_id)
     if filters.run_id is not None:
         run = db.scalar(run_query.where(GenerationRun.run_id == str(filters.run_id)))
         if run is None:
@@ -311,8 +314,8 @@ def get_run_snapshot_summary(db: Session, run: GenerationRun) -> dict:
     }
 
 
-def get_overview(db: Session, hospital_id: int, filters: AnalyticsFilters) -> dict:
-    context = _context(db, hospital_id, filters)
+def get_overview(db: Session, hospital_id: int, filters: AnalyticsFilters, owner_user_id: int | None = None) -> dict:
+    context = _context(db, hospital_id, filters, owner_user_id)
     snapshots = _snapshots(db, context)
     occupancy, _ = _daily_occupancy(snapshots)
     admission_days, discharge_days, transfer_days = _events(db, context)
@@ -365,16 +368,16 @@ def get_overview(db: Session, hospital_id: int, filters: AnalyticsFilters) -> di
     }
 
 
-def get_occupancy(db: Session, hospital_id: int, filters: AnalyticsFilters) -> dict:
-    context = _context(db, hospital_id, filters)
+def get_occupancy(db: Session, hospital_id: int, filters: AnalyticsFilters, owner_user_id: int | None = None) -> dict:
+    context = _context(db, hospital_id, filters, owner_user_id)
     snapshots = _snapshots(db, context)
     items, _ = _daily_occupancy(snapshots)
     context["metadata"]["has_data"] = bool(snapshots)
     return {"metadata": context["metadata"], "items": items}
 
 
-def get_patient_flow(db: Session, hospital_id: int, filters: AnalyticsFilters) -> dict:
-    context = _context(db, hospital_id, filters)
+def get_patient_flow(db: Session, hospital_id: int, filters: AnalyticsFilters, owner_user_id: int | None = None) -> dict:
+    context = _context(db, hospital_id, filters, owner_user_id)
     admission_days, discharge_days, transfer_days = _events(db, context)
     has_snapshot = bool(_snapshots(db, context))
     has_events = bool(admission_days or discharge_days or transfer_days)
@@ -393,8 +396,8 @@ def get_patient_flow(db: Session, hospital_id: int, filters: AnalyticsFilters) -
     return {"metadata": context["metadata"], "items": items}
 
 
-def get_departments(db: Session, hospital_id: int, filters: AnalyticsFilters) -> dict:
-    context = _context(db, hospital_id, filters)
+def get_departments(db: Session, hospital_id: int, filters: AnalyticsFilters, owner_user_id: int | None = None) -> dict:
+    context = _context(db, hospital_id, filters, owner_user_id)
     snapshots = _snapshots(db, context)
     occupancy, latest_by_dept_day = _daily_occupancy(snapshots)
     admission_days, discharge_days, transfer_days = _events(db, context)
@@ -494,14 +497,17 @@ def get_departments(db: Session, hospital_id: int, filters: AnalyticsFilters) ->
     return {"metadata": context["metadata"], "items": results, "transfer_routes": transfer_routes}
 
 
-def list_analytics_runs(db: Session, hospital_id: int) -> list[dict]:
+def list_analytics_runs(db: Session, hospital_id: int, owner_user_id: int | None = None) -> list[dict]:
     hospital = db.get(Hospital, hospital_id)
     if hospital is None:
         raise HTTPException(status_code=404, detail="Hospital not found.")
     runs = db.scalars(select(GenerationRun).where(
         GenerationRun.hospital_id == hospital_id,
         GenerationRun.status == "completed",
+        GenerationRun.deleted_at.is_(None),
     ).order_by(GenerationRun.completed_at.desc(), GenerationRun.started_at.desc())).all()
+    if owner_user_id is not None:
+        runs = [run for run in runs if run.owner_user_id == owner_user_id]
     result = []
     for run in runs:
         request = (run.config or {}).get("request") or {}
@@ -528,11 +534,14 @@ def list_analytics_runs(db: Session, hospital_id: int) -> list[dict]:
     return result
 
 
-def compare_analytics_runs(db: Session, request: AnalyticsComparisonRequest) -> dict:
+def compare_analytics_runs(db: Session, request: AnalyticsComparisonRequest, owner_user_id: int | None = None) -> dict:
     runs = list(db.scalars(select(GenerationRun).where(
         GenerationRun.run_id.in_([str(run_id) for run_id in request.run_ids]),
         GenerationRun.status == "completed",
+        GenerationRun.deleted_at.is_(None),
     )).all())
+    if owner_user_id is not None:
+        runs = [run for run in runs if run.owner_user_id == owner_user_id]
     if len(runs) != len(request.run_ids):
         raise HTTPException(status_code=404, detail="One or more selected runs are missing or not completed.")
     if len({run.hospital_id for run in runs}) != 1 or len({run.workspace_id for run in runs}) != 1:
@@ -558,11 +567,11 @@ def compare_analytics_runs(db: Session, request: AnalyticsComparisonRequest) -> 
             department_id=request.department_id,
             run_id=run.run_id,
         )
-        context = _context(db, hospital_id, filters)
+        context = _context(db, hospital_id, filters, owner_user_id)
         snapshots = _snapshots(db, context)
         occupancy, _ = _daily_occupancy(snapshots)
         admission_days, discharge_days, transfer_days = _events(db, context)
-        department_analytics = get_departments(db, hospital_id, filters)
+        department_analytics = get_departments(db, hospital_id, filters, owner_user_id)
         department_rows = department_analytics["items"]
         average, peak, lowest = _occupancy_stats(occupancy)
         metrics = {
@@ -603,8 +612,8 @@ def compare_analytics_runs(db: Session, request: AnalyticsComparisonRequest) -> 
     return {"baseline_run_id": baseline_id, "items": compared}
 
 
-def get_rule_based_insights(db: Session, hospital_id: int, filters: AnalyticsFilters) -> dict:
-    overview = get_overview(db, hospital_id, filters)
+def get_rule_based_insights(db: Session, hospital_id: int, filters: AnalyticsFilters, owner_user_id: int | None = None) -> dict:
+    overview = get_overview(db, hospital_id, filters, owner_user_id)
     run_id = overview["metadata"]["run_id"]
     if run_id is None:
         raise HTTPException(status_code=404, detail="No completed generation run is available for these filters.")

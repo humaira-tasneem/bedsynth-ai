@@ -2,16 +2,17 @@
 
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.routes import get_db
+from app.auth import current_user, enforce_role_by_method, resource_access
 from app.schemas import DatasetLibraryRead, DatasetPreviewRead, DatasetRunDetailRead
 from app.services.datasets import dataset_manifest, get_dataset_detail, list_datasets, preview_dataset_entity, stream_bed_inventory_csv, stream_entity_csv
 
-router = APIRouter(prefix="/api/v1", tags=["datasets"])
+router = APIRouter(prefix="/api/v1", tags=["datasets"], dependencies=[Depends(current_user), Depends(enforce_role_by_method), Depends(resource_access)])
 
 
 @router.get("/workspaces/{workspace_id}/datasets", response_model=DatasetLibraryRead)
@@ -24,9 +25,12 @@ def workspace_datasets(
     status: Literal["generating", "completed", "failed"] | None = None,
     sort: Literal["newest", "oldest"] = "newest",
     db: Session = Depends(get_db),
+    user=Depends(current_user),
 ) -> dict:
     return list_datasets(db, workspace_id, page=page, page_size=page_size, q=q,
-                         hospital_id=hospital_id, status=status, sort=sort)
+                         hospital_id=hospital_id, status=status, sort=sort,
+                         owner_user_id=None if user.role == "admin" else user.id,
+                         include_deleted=user.role == "admin")
 
 
 @router.get("/generation-runs/{run_id}/dataset", response_model=DatasetRunDetailRead)
@@ -69,3 +73,16 @@ def export_dataset_manifest(run_id: str, db: Session = Depends(get_db)) -> JSONR
             "Cache-Control": "no-store",
         },
     )
+
+
+@router.delete("/generation-runs/{run_id}/dataset", status_code=204)
+def soft_delete_dataset(run_id: str, db: Session = Depends(get_db)) -> Response:
+    from datetime import datetime, timezone
+    from app.models import GenerationRun
+
+    run = db.get(GenerationRun, run_id)
+    if run is None or run.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="Dataset not found.")
+    run.deleted_at = datetime.now(timezone.utc)
+    db.commit()
+    return Response(status_code=204)

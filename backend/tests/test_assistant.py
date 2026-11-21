@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 
+from app.auth import current_user
 from app.database import Base
 from app.environment import BACKEND_ENV_FILE, load_backend_environment
 from app.main import app
@@ -43,6 +44,7 @@ def assistant_client(tmp_path, monkeypatch) -> Generator[TestClient, None, None]
     previous_lifespan = app.router.lifespan_context
     app.router.lifespan_context = isolated_lifespan
     app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[current_user] = lambda: SimpleNamespace(id=None, role="admin", is_active=True)
     monkeypatch.setenv("GEMINI_API_KEY", "unit-test-key")
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     with TestClient(app) as client:

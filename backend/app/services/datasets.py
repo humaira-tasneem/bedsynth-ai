@@ -179,7 +179,8 @@ def _list_item(run: GenerationRun, hospital_name: str, counts: DatasetRecordCoun
 
 
 def list_datasets(db: Session, workspace_id: int, *, page: int, page_size: int,
-                  q: str | None, hospital_id: int | None, status: str | None, sort: str) -> dict:
+                  q: str | None, hospital_id: int | None, status: str | None, sort: str,
+                  owner_user_id: int | None = None, include_deleted: bool = False) -> dict:
     from app.models import Workspace
 
     if db.get(Workspace, workspace_id) is None:
@@ -188,6 +189,10 @@ def list_datasets(db: Session, workspace_id: int, *, page: int, page_size: int,
         GenerationRun.workspace_id == workspace_id,
         Hospital.workspace_id == workspace_id,
     )
+    if owner_user_id is not None:
+        query = query.where(GenerationRun.owner_user_id == owner_user_id)
+    if not include_deleted:
+        query = query.where(GenerationRun.deleted_at.is_(None))
     if hospital_id is not None:
         query = query.where(GenerationRun.hospital_id == hospital_id)
     if status is not None:

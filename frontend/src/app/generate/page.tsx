@@ -80,6 +80,7 @@ function copyDefaultLosProfile(): LengthOfStayProfile {
 async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`${apiBase}${path}`, {
     ...options,
+    credentials: "include",
     headers: { "Content-Type": "application/json", ...options.headers },
     cache: "no-store",
   });
@@ -195,7 +196,7 @@ export default function SyntheticDataGeneratorPage() {
     async function initialize() {
       try {
         const [health, workspaceEntries] = await Promise.all([
-          fetch(`${apiBase}/health`, { cache: "no-store" }).then((response) => {
+          fetch(`${apiBase}/health`, { cache: "no-store", credentials: "include" }).then((response) => {
             if (!response.ok) throw new Error("Backend health check failed.");
             return response.json() as Promise<{ status: string }>;
           }),

@@ -1,9 +1,10 @@
 """SQLite engine and SQLAlchemy base configuration."""
 
 import os
+from collections.abc import Generator
 
 from sqlalchemy import create_engine, event, inspect
-from sqlalchemy.orm import DeclarativeBase, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./bedsynth.db")
@@ -22,6 +23,14 @@ if DATABASE_URL.startswith("sqlite"):
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 
+def get_db() -> Generator[Session, None, None]:
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
 class Base(DeclarativeBase):
     """Declarative base shared by persisted application models."""
 
@@ -33,6 +42,7 @@ def initialize_database() -> None:
         legacy_columns = {
             "workspaces": {
                 "created_at": "DATETIME",
+                "is_shared": "BOOLEAN NOT NULL DEFAULT 0",
             },
             "hospital_networks": {
                 "is_archived": "BOOLEAN NOT NULL DEFAULT 0",
@@ -59,6 +69,8 @@ def initialize_database() -> None:
             "generation_runs": {
                 "waiting_queue_count": "INTEGER",
                 "bed_turnaround_count": "INTEGER",
+                "owner_user_id": "INTEGER REFERENCES users(id) ON DELETE SET NULL",
+                "deleted_at": "DATETIME",
             },
         }
         with engine.begin() as connection:
@@ -89,3 +101,6 @@ def initialize_database() -> None:
                 "CREATE UNIQUE INDEX IF NOT EXISTS uq_hospital_workspace_code "
                 "ON hospitals (workspace_id, code COLLATE NOCASE)"
             )
+            connection.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_generation_runs_owner_user_id ON generation_runs (owner_user_id)")
+            connection.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_generation_runs_deleted_at ON generation_runs (deleted_at)")
+            connection.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_workspaces_is_shared ON workspaces (is_shared)")
