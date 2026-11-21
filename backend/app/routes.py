@@ -40,6 +40,7 @@ from app.schemas import (
 )
 from app.services.synthetic_generation import generate_dataset, preview_generation
 from app.services.data_validation import persist_validation
+from app.services.account_activity import record_account_activity
 
 router = APIRouter(prefix="/api/v1", tags=["hospital-studio"], dependencies=[Depends(current_user), Depends(enforce_role_by_method), Depends(resource_access)])
 
@@ -429,7 +430,11 @@ def create_synthetic_generation(
     db: Session = Depends(get_db),
     user=Depends(current_user),
 ) -> GenerationRun:
-    return generate_dataset(db, hospital_id, payload, owner_user_id=user.id)
+    run = generate_dataset(db, hospital_id, payload, owner_user_id=user.id)
+    if run.status == "completed":
+        record_account_activity(db, "dataset_generated", actor_user_id=user.id,
+                                target_user_id=run.owner_user_id, run_id=run.run_id)
+    return run
 
 
 @router.get("/workspaces/{workspace_id}/generation-runs", response_model=list[GenerationRunRead])

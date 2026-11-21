@@ -43,6 +43,7 @@ export default function AppShell({ children }: Readonly<{ children: React.ReactN
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [dark, setDark] = useState(false);
+  const [motionPreference, setMotionPreference] = useState<"system" | "reduce" | "full">("system");
   const [health, setHealth] = useState<"checking" | "online" | "offline">("checking");
   const [identity, setIdentity] = useState<{ id: number; email: string; role: "admin" | "user" } | null>(null);
   const [guestSession, setGuestSession] = useState<{ expires_at: string } | null>(null);
@@ -91,6 +92,8 @@ export default function AppShell({ children }: Readonly<{ children: React.ReactN
 
   useEffect(() => {
     setCollapsed(window.localStorage.getItem("bedsynth-sidebar-collapsed") === "true");
+    const savedMotion = window.localStorage.getItem("bedsynth-reduced-motion");
+    setMotionPreference(savedMotion === null ? "system" : savedMotion === "true" ? "reduce" : "full");
     const savedTheme = window.localStorage.getItem("bedsynth-theme");
     const useDark = savedTheme ? savedTheme === "dark" : window.matchMedia("(prefers-color-scheme: dark)").matches;
     setDark(useDark);
@@ -107,6 +110,14 @@ export default function AppShell({ children }: Readonly<{ children: React.ReactN
     };
     window.addEventListener("bedsynth-theme-change", syncTheme);
     return () => window.removeEventListener("bedsynth-theme-change", syncTheme);
+  }, []);
+
+  useEffect(() => {
+    const sidebar = (event: Event) => setCollapsed(Boolean((event as CustomEvent<boolean>).detail));
+    const motion = (event: Event) => setMotionPreference((event as CustomEvent<boolean>).detail ? "reduce" : "full");
+    window.addEventListener("bedsynth-sidebar-change", sidebar);
+    window.addEventListener("bedsynth-motion-change", motion);
+    return () => { window.removeEventListener("bedsynth-sidebar-change", sidebar); window.removeEventListener("bedsynth-motion-change", motion); };
   }, []);
 
   useEffect(() => { setMobileOpen(false); }, [pathname]);
@@ -198,7 +209,7 @@ export default function AppShell({ children }: Readonly<{ children: React.ReactN
         </div>
         <div className="product-topbar-actions"><div className={`product-health health-${health}`} role="status" aria-live="polite"><i />{backendHealthLabel(health)}</div><button type="button" className="product-icon-button product-theme" onClick={toggleTheme} aria-label={`Switch to ${dark ? "light" : "dark"} theme`} title={`Switch to ${dark ? "light" : "dark"} theme`}>{dark ? <Sun size={18} /> : <Moon size={18} />}</button></div>
       </header>
-      <MotionConfig reducedMotion="user">
+      <MotionConfig reducedMotion={motionPreference === "system" ? "user" : motionPreference === "reduce" ? "always" : "never"}>
         <AnimatePresence mode="sync" initial={false}>
           <motion.div key={pathname} className="product-route-frame" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.1, ease: "easeOut" }}>
             {children}

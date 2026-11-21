@@ -50,6 +50,7 @@ class UserRead(BaseModel):
     role: Literal["admin", "user"]
     is_active: bool
     created_at: datetime
+    last_login_at: datetime | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -89,6 +90,58 @@ class RegistrationActivityPoint(BaseModel):
 class RegistrationActivity(BaseModel):
     days: int
     items: list[RegistrationActivityPoint]
+
+
+class RegistrationPeriodStats(BaseModel):
+    from_date: date | None
+    to_date: date | None
+    registered_accounts: int
+    active_registered_accounts: int
+    deactivated_registered_accounts: int
+    new_administrators: int
+    new_standard_users: int
+
+
+class RegistrationSeriesPoint(BaseModel):
+    period: str
+    registrations: int
+
+
+class RegistrationSeries(BaseModel):
+    from_date: date | None
+    to_date: date | None
+    granularity: str
+    items: list[RegistrationSeriesPoint]
+
+
+class AccountSettingsRead(BaseModel):
+    account: UserRead
+    session_expires_at: datetime
+
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=12, max_length=128)
+
+
+class AccountActivityItem(BaseModel):
+    id: int
+    actor_user_id: int | None
+    actor_email: str | None
+    target_user_id: int | None
+    target_email: str | None
+    run_id: str | None
+    event_type: str
+    occurred_at: datetime
+    metadata: dict
+
+
+class AccountActivityPage(BaseModel):
+    items: list[AccountActivityItem]
+    total: int
+    page: int
+    page_size: int
+    pages: int
 
 
 class WorkspaceSharingUpdate(BaseModel):

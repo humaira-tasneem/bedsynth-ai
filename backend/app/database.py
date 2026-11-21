@@ -52,6 +52,9 @@ def initialize_database() -> None:
                 "is_archived": "BOOLEAN NOT NULL DEFAULT 0",
                 "created_at": "DATETIME",
             },
+            "users": {
+                "last_login_at": "DATETIME",
+            },
             "departments": {
                 "bed_capacity": "INTEGER",
                 "is_archived": "BOOLEAN NOT NULL DEFAULT 0",

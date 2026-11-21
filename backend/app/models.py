@@ -67,6 +67,7 @@ class User(Base):
     role: Mapped[str] = mapped_column(String(16), nullable=False, default="user", index=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     sessions: Mapped[list["UserSession"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     generation_runs: Mapped[list["GenerationRun"]] = relationship(back_populates="owner")
 
@@ -80,6 +81,26 @@ class UserSession(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     user: Mapped[User] = relationship(back_populates="sessions")
+
+
+class AccountActivityEvent(Base):
+    """Append-only, privacy-limited account and dataset activity record."""
+    __tablename__ = "account_activity_events"
+    __table_args__ = (
+        Index("ix_account_activity_occurred_at", "occurred_at"),
+        Index("ix_account_activity_target_time", "target_user_id", "occurred_at"),
+        Index("ix_account_activity_actor_time", "actor_user_id", "occurred_at"),
+        Index("ix_account_activity_type_time", "event_type", "occurred_at"),
+        UniqueConstraint("run_id", "event_type", name="uq_account_activity_run_event"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    actor_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    target_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    run_id: Mapped[str | None] = mapped_column(ForeignKey("generation_runs.run_id", ondelete="SET NULL"), nullable=True)
+    event_type: Mapped[str] = mapped_column(String(48), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    metadata_json: Mapped[dict] = mapped_column("metadata", JSON, nullable=False, default=dict)
 
 
 class GuestSession(Base):

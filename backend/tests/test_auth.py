@@ -12,7 +12,7 @@ from app.auth import current_user, hash_password
 from app.database import Base, get_db
 from app.main import app
 from app.auth_routes import _cookie_options
-from app.models import GenerationRun, Hospital, User, UserSession, Workspace
+from app.models import AccountActivityEvent, GenerationRun, Hospital, User, UserSession, Workspace
 from app.security import InMemoryWindowLimiter
 
 
@@ -70,6 +70,58 @@ def test_auth_required_registration_and_http_only_cookie(auth_client: TestClient
     assert "httponly" in cookie and "samesite=lax" in cookie
     assert "password_hash" not in response.json()
     assert auth_client.get("/api/v1/auth/me").json()["email"] == "user@example.test"
+
+
+def test_account_settings_password_change_and_audit_tracking(auth_client: TestClient) -> None:
+    registration = auth_client.post("/api/v1/auth/register", json={
+        "email": "activity-user@example.test", "password": "correct-password-123",
+    })
+    assert registration.status_code == 201
+    user_id = registration.json()["id"]
+    assert registration.json()["last_login_at"] is None
+    settings = auth_client.get("/api/v1/auth/settings")
+    assert settings.status_code == 200
+    assert settings.json()["account"]["email"] == "activity-user@example.test"
+    assert settings.json()["session_expires_at"]
+    assert "password_hash" not in settings.text and "token" not in settings.text.lower()
+
+    assert auth_client.post("/api/v1/auth/login", json={
+        "email": "activity-user@example.test", "password": "wrong-password",
+    }).status_code == 401
+    with auth_client.test_sessions() as db:
+        events = list(db.scalars(select(AccountActivityEvent).where(AccountActivityEvent.target_user_id == user_id)))
+        assert [event.event_type for event in events] == ["account_registered"]
+
+    auth_client.post("/api/v1/auth/logout")
+    login_response = auth_client.post("/api/v1/auth/login", json={
+        "email": "activity-user@example.test", "password": "correct-password-123",
+    })
+    assert login_response.status_code == 200 and login_response.json()["last_login_at"] is not None
+    assert auth_client.get("/api/v1/admin/account-activity").status_code == 403
+    changed = auth_client.post("/api/v1/auth/change-password", json={
+        "current_password": "correct-password-123", "new_password": "new-correct-password-456",
+    })
+    assert changed.status_code == 204
+    assert auth_client.post("/api/v1/auth/change-password", json={
+        "current_password": "wrong-password", "new_password": "another-correct-password-789",
+    }).status_code == 400
+    auth_client.post("/api/v1/auth/logout")
+
+    make_admin(auth_client)
+    assert login(auth_client).status_code == 200
+    assert auth_client.patch(f"/api/v1/admin/users/{user_id}", json={"role": "admin"}).status_code == 200
+    assert auth_client.patch(f"/api/v1/admin/users/{user_id}", json={"is_active": False}).status_code == 200
+    assert auth_client.patch(f"/api/v1/admin/users/{user_id}", json={"is_active": True}).status_code == 200
+    global_events = auth_client.get(f"/api/v1/admin/account-activity?target_id={user_id}&page=1&page_size=100")
+    assert global_events.status_code == 200
+    items = global_events.json()["items"]
+    event_types = {item["event_type"] for item in items}
+    assert {"account_registered", "login_succeeded", "logout", "password_changed", "role_changed", "account_deactivated", "account_activated"} <= event_types
+    assert all("correct-password-123" not in str(item) and "new-correct-password-456" not in str(item)
+               and "scrypt$" not in str(item) for item in items)
+    timeline = auth_client.get(f"/api/v1/admin/users/{user_id}/activity?event_type=login_succeeded")
+    assert timeline.status_code == 200 and timeline.json()["total"] == 1
+    assert auth_client.get("/api/v1/admin/account-activity?page=0").status_code == 422
 
 
 def test_production_cookie_cannot_be_configured_without_secure_flag(monkeypatch) -> None:
@@ -233,5 +285,14 @@ def test_new_generation_is_owned_and_visible_only_to_its_creator(auth_client: Te
         assert stored.owner_user_id == creator_id
     listing = auth_client.get(f"/api/v1/workspaces/{workspace_id}/datasets")
     assert listing.status_code == 200 and [item["run_id"] for item in listing.json()["items"]] == [run["run_id"]]
+    with auth_client.test_sessions() as db:
+        generated_event = db.scalar(select(AccountActivityEvent).where(
+            AccountActivityEvent.run_id == run["run_id"], AccountActivityEvent.event_type == "dataset_generated"))
+        assert generated_event is not None and generated_event.actor_user_id == creator_id
+    assert auth_client.delete(f"/api/v1/generation-runs/{run['run_id']}/dataset").status_code == 204
+    with auth_client.test_sessions() as db:
+        deleted_event = db.scalar(select(AccountActivityEvent).where(
+            AccountActivityEvent.run_id == run["run_id"], AccountActivityEvent.event_type == "dataset_soft_deleted"))
+        assert deleted_event is not None and deleted_event.actor_user_id == creator_id
     auth_client.post("/api/v1/auth/register", json={"email": "another@example.test", "password": "long-password-two"}, headers={"Origin": "http://localhost:3000"})
     assert auth_client.get(f"/api/v1/generation-runs/{run['run_id']}/dataset").status_code == 404

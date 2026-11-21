@@ -174,6 +174,46 @@ def test_admin_user_management_is_admin_only(dashboard_client):
     assert dashboard_client.get("/api/v1/admin/users/activity").status_code == 403
 
 
+def test_custom_registration_date_ranges_aggregate_and_filter_accounts(dashboard_client):
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import select
+
+    cookies = _seed(dashboard_client)
+    with dashboard_client.test_sessions() as db:
+        users = {user.email: user for user in db.scalars(select(User)).all()}
+        today = datetime.now(timezone.utc).date()
+        users["admin@bedsynth.test"].created_at = datetime.combine(today, datetime.min.time(), timezone.utc)
+        users["owner@bedsynth.test"].created_at = datetime.combine(today - timedelta(days=12), datetime.min.time(), timezone.utc)
+        users["other@bedsynth.test"].created_at = datetime.combine(today - timedelta(days=60), datetime.min.time(), timezone.utc)
+        users["inactive@bedsynth.test"].created_at = datetime.combine(today - timedelta(days=180), datetime.min.time(), timezone.utc)
+        db.commit()
+    dashboard_client.cookies.set("bedsynth_session", cookies["admin"])
+
+    same_day = today.isoformat()
+    stats = dashboard_client.get(f"/api/v1/admin/users/registration-stats?from_date={same_day}&to_date={same_day}")
+    assert stats.status_code == 200
+    assert stats.json()["registered_accounts"] == 1
+    assert stats.json()["active_registered_accounts"] == 1
+    assert stats.json()["new_administrators"] == 1
+    assert stats.json()["new_standard_users"] == 0
+
+    series = dashboard_client.get(f"/api/v1/admin/users/registration-activity?from_date={today - timedelta(days=14)}&to_date={same_day}")
+    assert series.status_code == 200 and series.json()["granularity"] == "day"
+    assert len(series.json()["items"]) == 15
+    assert sum(item["registrations"] for item in series.json()["items"]) == 2
+    long_series = dashboard_client.get(f"/api/v1/admin/users/registration-activity?from_date={today - timedelta(days=120)}&to_date={same_day}")
+    assert long_series.status_code == 200 and long_series.json()["granularity"] == "week"
+    all_time = dashboard_client.get("/api/v1/admin/users/registration-activity")
+    assert all_time.status_code == 200 and all_time.json()["granularity"] == "month"
+
+    dated_users = dashboard_client.get(f"/api/v1/admin/users?from_date={same_day}&to_date={same_day}").json()
+    assert [item["email"] for item in dated_users["items"]] == ["admin@bedsynth.test"]
+    empty_day = (today - timedelta(days=30)).isoformat()
+    assert dashboard_client.get(f"/api/v1/admin/users/registration-stats?from_date={empty_day}&to_date={empty_day}").json()["registered_accounts"] == 0
+    assert dashboard_client.get(f"/api/v1/admin/users/registration-stats?from_date={same_day}&to_date={today - timedelta(days=1)}").status_code == 422
+    assert dashboard_client.get("/api/v1/admin/users/registration-activity?from_date=not-a-date").status_code == 422
+
+
 def test_dashboard_routes_require_authentication(dashboard_client):
     assert dashboard_client.get("/api/v1/dashboard/user").status_code == 401
     assert dashboard_client.get("/api/v1/admin/dashboard").status_code == 401

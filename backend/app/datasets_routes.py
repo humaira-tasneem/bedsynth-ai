@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.routes import get_db
 from app.auth import current_user, enforce_role_by_method, resource_access
+from app.services.account_activity import record_account_activity
 from app.schemas import DatasetLibraryRead, DatasetPreviewRead, DatasetRunDetailRead
 from app.services.datasets import dataset_manifest, get_dataset_detail, list_datasets, preview_dataset_entity, stream_bed_inventory_csv, stream_entity_csv
 
@@ -76,7 +77,7 @@ def export_dataset_manifest(run_id: str, db: Session = Depends(get_db)) -> JSONR
 
 
 @router.delete("/generation-runs/{run_id}/dataset", status_code=204)
-def soft_delete_dataset(run_id: str, db: Session = Depends(get_db)) -> Response:
+def soft_delete_dataset(run_id: str, db: Session = Depends(get_db), user=Depends(current_user)) -> Response:
     from datetime import datetime, timezone
     from app.models import GenerationRun
 
@@ -85,4 +86,6 @@ def soft_delete_dataset(run_id: str, db: Session = Depends(get_db)) -> Response:
         raise HTTPException(status_code=404, detail="Dataset not found.")
     run.deleted_at = datetime.now(timezone.utc)
     db.commit()
+    record_account_activity(db, "dataset_soft_deleted", actor_user_id=user.id,
+                            target_user_id=run.owner_user_id, run_id=run.run_id)
     return Response(status_code=204)
