@@ -1,13 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Activity, Building2, Check, CircleHelp, Database, Eye, KeyRound, LayoutDashboard, LockKeyhole, LogOut, Moon, MonitorCog, Palette, ShieldCheck, Sun, UserRound, X } from "lucide-react";
+import { Activity, Building2, Check, CircleHelp, Database, Eye, KeyRound, LockKeyhole, LogOut, ShieldCheck, UserRound, X } from "lucide-react";
 
 const apiBase = (process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
 type Account = { id: number; email: string; role: "admin" | "user"; is_active: boolean; created_at: string; last_login_at: string | null };
 type Workspace = { id: number; name: string; is_shared: boolean };
 type Hospital = { id: number; name: string; code: string; is_archived: boolean };
-type Density = "comfortable" | "compact";
 
 async function get<T>(path: string): Promise<T> {
   const response = await fetch(`${apiBase}/api/v1${path}`, { credentials: "include", cache: "no-store" });
@@ -22,10 +21,6 @@ export default function SettingsPage() {
   const [expiresAt, setExpiresAt] = useState("");
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [hospitals, setHospitals] = useState<Record<number, Hospital[]>>({});
-  const [theme, setTheme] = useState<"light" | "dark">("light");
-  const [density, setDensity] = useState<Density>("comfortable");
-  const [reducedMotion, setReducedMotion] = useState(false);
-  const [collapsed, setCollapsed] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busyWorkspace, setBusyWorkspace] = useState<number | null>(null);
   const [error, setError] = useState(""); const [success, setSuccess] = useState("");
@@ -33,12 +28,6 @@ export default function SettingsPage() {
   const [passwordBusy, setPasswordBusy] = useState(false);
 
   useEffect(() => {
-    setTheme((localStorage.getItem("bedsynth-theme") as "light" | "dark") || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"));
-    const storedDensity = (localStorage.getItem("bedsynth-density") as Density) || "comfortable";
-    setDensity(storedDensity); document.documentElement.dataset.density = storedDensity;
-    const savedMotion = localStorage.getItem("bedsynth-reduced-motion");
-    setReducedMotion(savedMotion === null ? matchMedia("(prefers-reduced-motion: reduce)").matches : savedMotion === "true");
-    setCollapsed(localStorage.getItem("bedsynth-sidebar-collapsed") === "true");
     let active = true;
     (async () => {
       setLoading(true); setError("");
@@ -59,11 +48,6 @@ export default function SettingsPage() {
     })();
     return () => { active = false; };
   }, []);
-
-  function applyTheme(value: "light" | "dark") { setTheme(value); localStorage.setItem("bedsynth-theme", value); document.documentElement.dataset.theme = value; window.dispatchEvent(new CustomEvent("bedsynth-theme-change", { detail: value })); }
-  function applyDensity(value: Density) { setDensity(value); localStorage.setItem("bedsynth-density", value); document.documentElement.dataset.density = value; }
-  function applyMotion(value: boolean) { setReducedMotion(value); localStorage.setItem("bedsynth-reduced-motion", String(value)); document.documentElement.dataset.reducedMotion = String(value); window.dispatchEvent(new CustomEvent("bedsynth-motion-change", { detail: value })); }
-  function applySidebar(value: boolean) { setCollapsed(value); localStorage.setItem("bedsynth-sidebar-collapsed", String(value)); window.dispatchEvent(new CustomEvent("bedsynth-sidebar-change", { detail: value })); }
 
   async function toggleSharing(workspace: Workspace) {
     setBusyWorkspace(workspace.id); setError(""); setSuccess("");
@@ -92,20 +76,13 @@ export default function SettingsPage() {
   }
 
   return <main className="page-content settings-center" id="main-content">
-    <header className="page-heading"><div><div className="page-kicker"><span className="kicker-line" /> PERSONALIZATION & SECURITY</div><h1>Settings Center</h1><p className="page-subtitle">Manage this device’s appearance, account security, and workspace access.</p></div></header>
+    <header className="page-heading"><div><div className="page-kicker"><span className="kicker-line" /> ACCOUNT & PLATFORM</div><h1>Settings Center</h1><p className="page-subtitle">Manage your account, security, workspace access, and platform information.</p></div></header>
     {error && <div className="settings-feedback error" role="alert">{error}<button type="button" aria-label="Dismiss error" onClick={() => setError("")}><X size={16} /></button></div>}
     {success && <div className="settings-feedback success" role="status">{success}<button type="button" aria-label="Dismiss message" onClick={() => setSuccess("")}><X size={16} /></button></div>}
     {loading && <div className="generator-loading" role="status">Loading your settings…</div>}
     <div className="settings-center-grid">
-      <nav className="settings-index" aria-label="Settings sections"><strong>SETTINGS</strong><a href="#appearance"><Palette size={16} />Appearance</a><a href="#account"><UserRound size={16} />Account</a><a href="#security"><LockKeyhole size={16} />Security</a><a href="#workspace"><Building2 size={16} />Workspace access</a><a href="#privacy"><Eye size={16} />Data &amp; privacy</a><a href="#about"><CircleHelp size={16} />About</a></nav>
+      <nav className="settings-index" aria-label="Settings sections"><strong>SETTINGS</strong><a href="#account"><UserRound size={16} />Account</a><a href="#security"><LockKeyhole size={16} />Security</a><a href="#workspace"><Building2 size={16} />Workspace access</a><a href="#privacy"><Eye size={16} />Data &amp; privacy</a><a href="#about"><CircleHelp size={16} />About</a></nav>
       <div className="settings-sections">
-        <section className="settings-panel" id="appearance"><header><span><Palette size={18} /></span><div><h2>Appearance &amp; display</h2><p>Preferences are stored on this device and apply immediately.</p></div></header>
-          <div className="settings-control-row"><div><strong>Color theme</strong><small>Choose the display used throughout the application.</small></div><div className="settings-choice-group" role="group" aria-label="Color theme"><button type="button" aria-pressed={theme === "light"} className={theme === "light" ? "selected" : ""} onClick={() => applyTheme("light")}><Sun size={16} />Light</button><button type="button" aria-pressed={theme === "dark"} className={theme === "dark" ? "selected" : ""} onClick={() => applyTheme("dark")}><Moon size={16} />Dark</button></div></div>
-          <div className="settings-control-row"><div><strong>Sidebar</strong><small>Keep a compact or expanded navigation rail.</small></div><label className="settings-switch"><input type="checkbox" checked={collapsed} onChange={(event) => applySidebar(event.target.checked)} /><span>{collapsed ? "Collapsed" : "Expanded"}</span></label></div>
-          <div className="settings-control-row"><div><strong>Content density</strong><small>Choose comfortable spacing or a more compact view.</small></div><select value={density} onChange={(event) => applyDensity(event.target.value as Density)} aria-label="Content density"><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></div>
-          <div className="settings-control-row"><div><strong>Reduce motion</strong><small>Respect your preference for fewer interface animations.</small></div><label className="settings-switch"><input type="checkbox" checked={reducedMotion} onChange={(event) => applyMotion(event.target.checked)} /><span>{reducedMotion ? "On" : "Off"}</span></label></div>
-        </section>
-
         <section className="settings-panel" id="account"><header><span><UserRound size={18} /></span><div><h2>Account profile</h2><p>Read-only account information from your authenticated session.</p></div></header>
           {account && <dl className="settings-account-grid"><div><dt>Email</dt><dd>{account.email}</dd></div><div><dt>Role</dt><dd>{account.role === "admin" ? "Administrator" : "Standard user"}</dd></div><div><dt>Account status</dt><dd><span className={`settings-status ${account.is_active ? "active" : "inactive"}`}>{account.is_active ? "Active" : "Deactivated"}</span></dd></div><div><dt>Registered</dt><dd>{dateTime(account.created_at)}</dd></div><div><dt>Last successful login</dt><dd>{account.last_login_at ? dateTime(account.last_login_at) : "Not recorded yet"}</dd></div></dl>}
           <p className="settings-inline-note">Profile details are read-only. Account roles can only be managed by an administrator through User Management.</p>
