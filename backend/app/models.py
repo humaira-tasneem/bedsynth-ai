@@ -47,6 +47,7 @@ class Hospital(Base):
     name: Mapped[str] = mapped_column(String(160), nullable=False)
     code: Mapped[str] = mapped_column(String(40, collation="NOCASE"), nullable=False)
     is_archived: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    available_to_users: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
     workspace: Mapped[Workspace] = relationship(back_populates="hospitals")
     network: Mapped[HospitalNetwork | None] = relationship(back_populates="hospitals")

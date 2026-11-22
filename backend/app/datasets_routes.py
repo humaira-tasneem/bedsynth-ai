@@ -30,8 +30,8 @@ def workspace_datasets(
 ) -> dict:
     return list_datasets(db, workspace_id, page=page, page_size=page_size, q=q,
                          hospital_id=hospital_id, status=status, sort=sort,
-                         owner_user_id=None if user.role == "admin" else user.id,
-                         include_deleted=user.role == "admin")
+                         owner_user_id=user.id,
+                         include_deleted=False)
 
 
 @router.get("/generation-runs/{run_id}/dataset", response_model=DatasetRunDetailRead)

@@ -6,10 +6,12 @@ const page = await readFile(new URL("./page.tsx", import.meta.url), "utf8");
 const shell = await readFile(new URL("../../components/AppShell.tsx", import.meta.url), "utf8");
 
 test("Settings keeps account and platform sections without appearance controls", () => {
-  for (const id of ["account", "security", "workspace", "privacy", "about"]) {
+  for (const id of ["account", "security", "privacy", "about"]) {
     assert.match(page, new RegExp(`href="#${id}"`));
     assert.match(page, new RegExp(`id="${id}"`));
   }
+  assert.equal(page.includes('href="#workspace"'), false);
+  assert.equal(page.includes('id="workspace"'), false);
   for (const removed of ["Appearance &amp; display", "Appearance</a>", "Color theme", "Sidebar</strong>", "Content density", "Reduce motion", "settings-choice-group", "settings-switch"]) {
     assert.equal(page.includes(removed), false, `${removed} should not remain on Settings`);
   }

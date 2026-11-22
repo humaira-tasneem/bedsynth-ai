@@ -37,9 +37,9 @@ def assistant_status() -> AssistantServiceStatusRead:
 def assistant_chat(payload: AssistantChatRequest, db: Session = Depends(get_db), user: User = Depends(current_user)) -> dict:
     """Interpret bounded conversation text; never writes or generates records."""
     workspace = db.get(Workspace, payload.workspace_id)
-    if workspace is None or (user.role != "admin" and not workspace.is_shared):
+    if workspace is None:
         raise HTTPException(status_code=404, detail="Workspace not found.")
-    return chat_with_assistant(db, payload)
+    return chat_with_assistant(db, payload, include_unpublished=user.role == "admin")
 
 
 @router.post("/validate-config", response_model=AssistantConfigValidationResponse)
@@ -50,7 +50,7 @@ def validate_config(
 ) -> dict:
     """Validate edited assistant configuration independently of Gemini."""
     workspace = db.get(Workspace, payload.workspace_id)
-    if workspace is None or (user.role != "admin" and not workspace.is_shared):
+    if workspace is None:
         raise HTTPException(status_code=404, detail="Hospital not found in this workspace.")
     hospital = db.get(Hospital, payload.hospital_id)
     if hospital is None:
@@ -58,7 +58,7 @@ def validate_config(
     if hospital.workspace_id != workspace.id:
         if user.role != "admin":
             raise HTTPException(status_code=404, detail="Hospital not found in this workspace.")
-    if user.role != "admin" and hospital.is_archived:
+    if user.role != "admin" and (hospital.is_archived or not hospital.available_to_users):
         raise HTTPException(status_code=404, detail="Hospital not found in this workspace.")
     configuration = validate_assistant_config(db, payload)
     return {"valid": True, "configuration": configuration}

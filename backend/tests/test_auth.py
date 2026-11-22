@@ -12,7 +12,7 @@ from app.auth import current_user, hash_password
 from app.database import Base, get_db
 from app.main import app
 from app.auth_routes import _cookie_options
-from app.models import AccountActivityEvent, GenerationRun, Hospital, User, UserSession, Workspace
+from app.models import AccountActivityEvent, GenerationRun, Hospital, User, UserSession, ValidationReport, Workspace
 from app.security import InMemoryWindowLimiter
 
 
@@ -193,21 +193,53 @@ def test_generic_login_failure_and_logout_revokes_session(auth_client: TestClien
     assert auth_client.get("/api/v1/auth/me").status_code == 401
 
 
-def test_user_is_restricted_to_shared_workspaces_and_admin_writes(auth_client: TestClient) -> None:
+def test_published_hospitals_control_user_visibility_and_admin_writes(auth_client: TestClient) -> None:
     make_admin(auth_client)
     admin = login(auth_client)
     workspace = auth_client.post("/api/v1/workspaces", json={"name": "Private"}, headers={"Origin": "http://localhost:3000"}).json()
+    hospital = auth_client.post(f"/api/v1/workspaces/{workspace['id']}/hospitals", json={"name": "Publishable Hospital", "code": "PUB-01"}).json()
+    department = auth_client.post(f"/api/v1/hospitals/{hospital['id']}/departments", json={"name": "Emergency", "code": "EMG", "bed_capacity": 2}).json()
+    bed = auth_client.post(f"/api/v1/hospitals/{hospital['id']}/departments/{department['id']}/beds", json={"code": "EMG-001", "category": "general"}).json()
+    assert hospital["available_to_users"] is False
     user_response = auth_client.post("/api/v1/auth/register", json={"email": "member@example.test", "password": "long-password-456"}, headers={"Origin": "http://localhost:3000"})
     assert user_response.status_code == 201
     assert auth_client.get(f"/api/v1/workspaces/{workspace['id']}/hospitals").status_code == 404
+    assert auth_client.get(f"/api/v1/workspaces/{workspace['id']}/hospitals/{hospital['id']}").status_code == 404
+    assert auth_client.get(f"/api/v1/hospitals/{hospital['id']}/departments").status_code == 404
+    assert auth_client.get(f"/api/v1/hospitals/{hospital['id']}/beds").status_code == 404
     assert auth_client.post(f"/api/v1/workspaces/{workspace['id']}/hospitals", json={"name": "X", "code": "X"}).status_code == 403
+    assert auth_client.patch(f"/api/v1/workspaces/{workspace['id']}/hospitals/{hospital['id']}", json={"name": "Hacked"}).status_code == 403
+    assert auth_client.post(f"/api/v1/hospitals/{hospital['id']}/departments", json={"name": "Cardiology", "code": "CAR", "bed_capacity": 1}).status_code == 403
+    assert auth_client.patch(f"/api/v1/hospitals/{hospital['id']}/departments/{department['id']}", json={"name": "Hacked"}).status_code == 403
+    assert auth_client.post(f"/api/v1/hospitals/{hospital['id']}/departments/{department['id']}/beds", json={"code": "EMG-002", "category": "general"}).status_code == 403
+    assert auth_client.patch(f"/api/v1/hospitals/{hospital['id']}/beds/{bed['id']}", json={"status": "retired"}).status_code == 403
     auth_client.post("/api/v1/auth/logout", headers={"Origin": "http://localhost:3000"})
     auth_client.cookies.clear()
     auth_client.cookies.update({"bedsynth_session": admin.cookies.get("bedsynth_session")})
-    assert auth_client.patch(f"/api/v1/admin/workspaces/{workspace['id']}/sharing", json={"is_shared": True}).status_code == 200
+    published = auth_client.patch(f"/api/v1/workspaces/{workspace['id']}/hospitals/{hospital['id']}", json={"available_to_users": True})
+    assert published.status_code == 200 and published.json()["available_to_users"] is True
     auth_client.post("/api/v1/auth/logout", headers={"Origin": "http://localhost:3000"})
     auth_client.post("/api/v1/auth/login", json={"email": "member@example.test", "password": "long-password-456"}, headers={"Origin": "http://localhost:3000"})
     assert [item["id"] for item in auth_client.get("/api/v1/workspaces").json()] == [workspace["id"]]
+    visible = auth_client.get(f"/api/v1/workspaces/{workspace['id']}/hospitals")
+    assert [item["id"] for item in visible.json()] == [hospital["id"]]
+    assert auth_client.get(f"/api/v1/hospitals/{hospital['id']}/departments").status_code == 200
+
+
+def test_published_hospital_can_be_unpublished_archived_and_restored_by_admin(auth_client: TestClient) -> None:
+    make_admin(auth_client); login(auth_client)
+    from test_synthetic_generation import make_hospital
+    workspace_id, hospital_id, _ = make_hospital(auth_client)
+    response = auth_client.patch(f"/api/v1/workspaces/{workspace_id}/hospitals/{hospital_id}", json={"available_to_users": True})
+    assert response.status_code == 200 and response.json()["available_to_users"] is True
+    assert auth_client.patch(f"/api/v1/workspaces/{workspace_id}/hospitals/{hospital_id}", json={"available_to_users": False}).json()["available_to_users"] is False
+    restored = auth_client.patch(f"/api/v1/workspaces/{workspace_id}/hospitals/{hospital_id}", json={"available_to_users": True, "is_archived": True})
+    assert restored.status_code == 200 and restored.json()["is_archived"] is True
+    with auth_client.test_sessions() as db:
+        hospital = db.get(Hospital, hospital_id)
+        assert hospital is not None and hospital.available_to_users is True
+    active = auth_client.patch(f"/api/v1/workspaces/{workspace_id}/hospitals/{hospital_id}", json={"is_archived": False})
+    assert active.status_code == 200 and active.json()["available_to_users"] is True
 
 
 def test_non_admin_cannot_call_admin_routes_and_last_admin_is_protected(auth_client: TestClient) -> None:
@@ -245,19 +277,74 @@ def test_foreign_and_historical_runs_are_not_exposed_to_user(auth_client: TestCl
         other = User(email="other@example.test", password_hash=hash_password("long-password-def"), role="user", is_active=True)
         workspace = Workspace(name="Shared", is_shared=True)
         db.add_all([owner, other, workspace]); db.flush()
-        hospital = Hospital(workspace_id=workspace.id, name="Shared Simulation Hospital", code="SHARED")
+        hospital = Hospital(workspace_id=workspace.id, name="Shared Simulation Hospital", code="SHARED", available_to_users=True)
         db.add(hospital); db.flush()
         run = GenerationRun(run_id="owned-run", workspace_id=workspace.id, hospital_id=hospital.id, owner_user_id=owner.id, idempotency_key="00000000-0000-0000-0000-000000000000", config={"request": {}}, seed=1, status="completed")
         historical = GenerationRun(run_id="legacy-run", workspace_id=workspace.id, hospital_id=hospital.id, owner_user_id=None, idempotency_key="00000000-0000-0000-0000-000000000001", config={"request": {}}, seed=1, status="completed")
-        db.add_all([run, historical]);
+        db.add_all([run, historical]); db.flush()
+        db.add(ValidationReport(validation_id="00000000-0000-0000-0000-000000000301", run_id=run.run_id,
+            workspace_id=workspace.id, hospital_id=hospital.id, score=100, checks_performed=1, checks_passed=1,
+            checks_failed=0, warning_count=0, status="passed", categories=[], issues=[]))
         db.commit()
         other_email = other.email
+        workspace_id = workspace.id
+        hospital_id = hospital.id
     auth_client.post("/api/v1/auth/login", json={"email": other_email, "password": "long-password-def"}, headers={"Origin": "http://localhost:3000"})
     assert auth_client.get("/api/v1/generation-runs/owned-run/dataset").status_code == 404
     assert auth_client.get("/api/v1/generation-runs/legacy-run/dataset").status_code == 404
     assert auth_client.get("/api/v1/generation-runs/owned-run/dataset/export/patients").status_code == 404
     assert auth_client.get("/api/v1/generation-runs/legacy-run/dataset/manifest").status_code == 404
-    assert auth_client.get("/api/v1/analytics/hospitals/1/runs").json()["items"] == []
+    assert auth_client.get("/api/v1/generation-runs/owned-run/validations").status_code == 404
+    assert auth_client.get("/api/v1/validations/00000000-0000-0000-0000-000000000301").status_code == 404
+    assert auth_client.get(f"/api/v1/workspaces/{workspace_id}/datasets").json()["items"] == []
+    assert auth_client.get(f"/api/v1/workspaces/{workspace_id}/generation-runs").json() == []
+    assert auth_client.get(f"/api/v1/analytics/hospitals/{hospital_id}/runs").json()["items"] == []
+
+
+def test_administrator_can_access_only_owned_datasets_and_reports(auth_client: TestClient) -> None:
+    admin = make_admin(auth_client)
+    assert login(auth_client).status_code == 200
+    with auth_client.test_sessions() as db:
+        other = User(email="different-owner@example.test", password_hash=hash_password("other-owner-password"), role="user", is_active=True)
+        workspace = Workspace(name="Owner scoped", is_shared=False)
+        db.add_all([other, workspace]); db.flush()
+        hospital = Hospital(workspace_id=workspace.id, name="Owner Scope Hospital", code="OWNERS", available_to_users=True)
+        db.add(hospital); db.flush()
+        own_run = GenerationRun(run_id="00000000-0000-0000-0000-000000000011", workspace_id=workspace.id, hospital_id=hospital.id,
+            owner_user_id=admin["id"], idempotency_key="00000000-0000-0000-0000-000000000101", config={"request": {}}, seed=11, status="completed")
+        foreign_run = GenerationRun(run_id="00000000-0000-0000-0000-000000000012", workspace_id=workspace.id, hospital_id=hospital.id,
+            owner_user_id=other.id, idempotency_key="00000000-0000-0000-0000-000000000102", config={"request": {}}, seed=12, status="completed")
+        historical_run = GenerationRun(run_id="00000000-0000-0000-0000-000000000013", workspace_id=workspace.id, hospital_id=hospital.id,
+            owner_user_id=None, idempotency_key="00000000-0000-0000-0000-000000000103", config={"request": {}}, seed=13, status="completed")
+        db.add_all([own_run, foreign_run, historical_run]); db.flush()
+        foreign_report = ValidationReport(validation_id="00000000-0000-0000-0000-000000000201", run_id=foreign_run.run_id,
+            workspace_id=workspace.id, hospital_id=hospital.id, score=100, checks_performed=1, checks_passed=1,
+            checks_failed=0, warning_count=0, status="passed", categories=[], issues=[])
+        db.add(foreign_report); db.commit()
+        workspace_id, hospital_id = workspace.id, hospital.id
+
+    listing = auth_client.get(f"/api/v1/workspaces/{workspace_id}/datasets")
+    assert listing.status_code == 200
+    assert [item["run_id"] for item in listing.json()["items"]] == ["00000000-0000-0000-0000-000000000011"]
+    admin_listing = auth_client.get("/api/v1/admin/datasets?include_deleted=true")
+    assert admin_listing.status_code == 200
+    assert [item["run_id"] for item in admin_listing.json()["items"]] == ["00000000-0000-0000-0000-000000000011"]
+    assert auth_client.get("/api/v1/admin/datasets?ownership=historical").json()["items"] == []
+    assert auth_client.get("/api/v1/generation-runs/00000000-0000-0000-0000-000000000011/dataset").status_code == 200
+    for run_id in ("00000000-0000-0000-0000-000000000012", "00000000-0000-0000-0000-000000000013"):
+        assert auth_client.get(f"/api/v1/generation-runs/{run_id}/dataset").status_code == 404
+        assert auth_client.get(f"/api/v1/generation-runs/{run_id}/dataset/export/patients").status_code == 404
+        assert auth_client.get(f"/api/v1/generation-runs/{run_id}/dataset/manifest").status_code == 404
+        assert auth_client.get(f"/api/v1/generation-runs/{run_id}/validations").status_code == 404
+        assert auth_client.delete(f"/api/v1/generation-runs/{run_id}/dataset").status_code == 404
+    assert auth_client.get("/api/v1/validations/00000000-0000-0000-0000-000000000201").status_code == 404
+    analytics = auth_client.get(f"/api/v1/analytics/hospitals/{hospital_id}/runs")
+    assert [item["run_id"] for item in analytics.json()["items"]] == ["00000000-0000-0000-0000-000000000011"]
+    comparison = auth_client.post("/api/v1/analytics/runs/compare", json={"run_ids": [
+        "00000000-0000-0000-0000-000000000011", "00000000-0000-0000-0000-000000000012",
+    ]})
+    assert comparison.status_code == 404
+    assert auth_client.delete("/api/v1/generation-runs/00000000-0000-0000-0000-000000000011/dataset").status_code == 204
 
 
 def test_cross_origin_cookie_mutation_is_rejected(auth_client: TestClient) -> None:
@@ -273,8 +360,8 @@ def test_new_generation_is_owned_and_visible_only_to_its_creator(auth_client: Te
     assert login(auth_client).status_code == 200
     workspace_id, hospital_id, departments = make_hospital(auth_client, department_count=1, beds_per_department=2)
     with auth_client.test_sessions() as db:
-        workspace = db.get(Workspace, workspace_id)
-        workspace.is_shared = True
+        hospital = db.get(Hospital, hospital_id)
+        hospital.available_to_users = True
         db.commit()
     response = auth_client.post("/api/v1/auth/register", json={"email": "creator@example.test", "password": "long-password-own"}, headers={"Origin": "http://localhost:3000"})
     assert response.status_code == 201

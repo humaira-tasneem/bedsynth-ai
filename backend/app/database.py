@@ -50,6 +50,7 @@ def initialize_database() -> None:
             "hospitals": {
                 "code": "VARCHAR(40)",
                 "is_archived": "BOOLEAN NOT NULL DEFAULT 0",
+                "available_to_users": "BOOLEAN NOT NULL DEFAULT 0",
                 "created_at": "DATETIME",
             },
             "users": {
@@ -109,4 +110,5 @@ def initialize_database() -> None:
             connection.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_generation_runs_deleted_at ON generation_runs (deleted_at)")
             connection.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_generation_runs_guest_session_id ON generation_runs (guest_session_id)")
             connection.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_workspaces_is_shared ON workspaces (is_shared)")
+            connection.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_hospitals_available_to_users ON hospitals (available_to_users)")
             connection.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_users_created_at ON users (created_at)")

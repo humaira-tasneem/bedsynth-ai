@@ -203,19 +203,16 @@ def _contains_likely_patient_information(text: str) -> bool:
     return any(pattern.search(text) for pattern in SENSITIVE_TEXT_PATTERNS)
 
 
-def _workspace_hospitals(db: Session, workspace_id: int) -> list[Hospital]:
+def _workspace_hospitals(db: Session, workspace_id: int, *, include_unpublished: bool = False) -> list[Hospital]:
     if db.get(Workspace, workspace_id) is None:
         raise HTTPException(status_code=404, detail="Workspace not found.")
-    total = db.scalar(select(func.count(Hospital.id)).where(
-        Hospital.workspace_id == workspace_id,
-        Hospital.is_archived.is_(False),
-    )) or 0
+    filters = [Hospital.workspace_id == workspace_id, Hospital.is_archived.is_(False)]
+    if not include_unpublished:
+        filters.append(Hospital.available_to_users.is_(True))
+    total = db.scalar(select(func.count(Hospital.id)).where(*filters)) or 0
     if total > MAX_WORKSPACE_HOSPITALS:
         raise HTTPException(status_code=422, detail="This workspace has too many active hospitals for the bounded assistant catalog. Use Hospital Studio or the standard generator.")
-    return list(db.scalars(select(Hospital).where(
-        Hospital.workspace_id == workspace_id,
-        Hospital.is_archived.is_(False),
-    ).order_by(Hospital.name, Hospital.id)).all())
+    return list(db.scalars(select(Hospital).where(*filters).order_by(Hospital.name, Hospital.id)).all())
 
 
 def _catalog(hospitals: list[Hospital]) -> list[dict[str, str]]:
@@ -702,7 +699,7 @@ def _provider_health_from_category(category: str | None) -> str:
     return "not_configured" if category == "not_configured" else category or "provider_error"
 
 
-def chat_with_assistant(db: Session, request: AssistantChatRequest) -> dict:
+def chat_with_assistant(db: Session, request: AssistantChatRequest, *, include_unpublished: bool = False) -> dict:
     # The assistant appends an application-assigned random seed to ready replies.
     # It is not user-supplied patient information, so omit only that exact,
     # backend-generated annotation from the privacy scan. User messages remain
@@ -719,7 +716,7 @@ def chat_with_assistant(db: Session, request: AssistantChatRequest) -> dict:
     conversation_text = "\n".join([request.message, *history_for_privacy_scan])
     if _contains_likely_patient_information(conversation_text):
         raise HTTPException(status_code=422, detail="Remove patient-identifying or clinical information before using the assistant. Only fictional hospital operations generation requirements belong here.")
-    hospitals = _workspace_hospitals(db, request.workspace_id)
+    hospitals = _workspace_hospitals(db, request.workspace_id, include_unpublished=include_unpublished)
     if not hospitals:
         return {
             "status": "needs_clarification",

@@ -32,7 +32,6 @@ def user_dashboard(db: Session = Depends(get_db), user: User = Depends(current_u
         GenerationRun.guest_session_id.is_(None),
         GenerationRun.deleted_at.is_(None),
         GenerationRun.status == "completed",
-        Workspace.is_shared.is_(True),
     )
     total_datasets = int(db.scalar(select(func.count(GenerationRun.run_id)).join(
         Workspace, Workspace.id == GenerationRun.workspace_id
@@ -48,7 +47,7 @@ def user_dashboard(db: Session = Depends(get_db), user: User = Depends(current_u
     ).where(*run_filter)) or 0 for column in (GenerationRun.waiting_queue_count, GenerationRun.bed_turnaround_count))
     runs = list(db.scalars(select(GenerationRun).join(Workspace, Workspace.id == GenerationRun.workspace_id)
         .where(GenerationRun.owner_user_id == user.id, GenerationRun.guest_session_id.is_(None),
-               GenerationRun.deleted_at.is_(None), Workspace.is_shared.is_(True))
+               GenerationRun.deleted_at.is_(None))
         .order_by(GenerationRun.started_at.desc(), GenerationRun.run_id.desc()).limit(5)).all())
     counts = _record_counts(db, runs)
     hospital_names = {row.id: row.name for row in db.scalars(select(Hospital).where(
@@ -76,8 +75,8 @@ def user_dashboard(db: Session = Depends(get_db), user: User = Depends(current_u
 
 
 @admin_router.get("/dashboard")
-def admin_dashboard(db: Session = Depends(get_db)) -> dict:
-    """Platform-wide counts and recent activity; protected by admin_user."""
+def admin_dashboard(db: Session = Depends(get_db), user: User = Depends(current_user)) -> dict:
+    """Administration summary with generation data restricted to the signed-in administrator."""
     total_users = db.scalar(select(func.count(User.id))) or 0
     active_users = db.scalar(select(func.count(User.id)).where(User.is_active.is_(True))) or 0
     shared_hospitals = select(Hospital.id).join(Workspace, Workspace.id == Hospital.workspace_id).where(
@@ -93,6 +92,7 @@ def admin_dashboard(db: Session = Depends(get_db)) -> dict:
         Bed.status != "retired",
     )) or 0
     run_filter = (
+        GenerationRun.owner_user_id == user.id,
         GenerationRun.guest_session_id.is_(None),
         GenerationRun.deleted_at.is_(None),
     )
@@ -137,6 +137,7 @@ def admin_dashboard(db: Session = Depends(get_db)) -> dict:
 @admin_router.get("/datasets")
 def admin_datasets(
     db: Session = Depends(get_db),
+    user: User = Depends(current_user),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
     q: str | None = Query(default=None, max_length=120),
@@ -145,19 +146,19 @@ def admin_datasets(
     ownership: str | None = Query(default=None, pattern="^(owned|historical)$"),
     include_deleted: bool = False,
 ) -> dict:
-    """Search across platform runs, including historical unowned runs."""
+    """Search the signed-in administrator's own runs only."""
     query = select(GenerationRun, Hospital.name, User.email).join(
         Hospital, (Hospital.id == GenerationRun.hospital_id) & (Hospital.workspace_id == GenerationRun.workspace_id),
-    ).outerjoin(User, User.id == GenerationRun.owner_user_id).where(GenerationRun.guest_session_id.is_(None))
+    ).outerjoin(User, User.id == GenerationRun.owner_user_id).where(
+        GenerationRun.guest_session_id.is_(None), GenerationRun.owner_user_id == user.id
+    )
     if not include_deleted:
         query = query.where(GenerationRun.deleted_at.is_(None))
     if hospital_id is not None:
         query = query.where(GenerationRun.hospital_id == hospital_id)
     if status:
         query = query.where(GenerationRun.status == status)
-    if ownership == "owned":
-        query = query.where(GenerationRun.owner_user_id.is_not(None))
-    elif ownership == "historical":
+    if ownership == "historical":
         query = query.where(GenerationRun.owner_user_id.is_(None))
     if q:
         needle = f"%{q.strip()}%"

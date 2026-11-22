@@ -110,39 +110,35 @@ def enforce_role_by_method(request: Request, user: User = Depends(current_user))
 
 
 def resource_access(request: Request, db: Session = Depends(get_db), user: User = Depends(current_user)) -> None:
-    """Enforce workspace sharing and per-user run ownership for URL-scoped routes."""
-    if user.role == "admin":
-        run_id = request.path_params.get("run_id")
-        if run_id is not None:
-            run = db.get(GenerationRun, str(run_id))
-            if run is None or run.guest_session_id is not None:
-                raise HTTPException(status_code=404, detail="Dataset not found.")
-        validation_id = request.path_params.get("validation_id")
-        if validation_id is not None:
-            report = db.get(ValidationReport, str(validation_id))
-            run = db.get(GenerationRun, report.run_id) if report else None
-            if run is None or run.guest_session_id is not None:
-                raise HTTPException(status_code=404, detail="Validation report not found.")
-        return
+    """Restrict hospital reads to published inventory and all runs to their owner."""
     params = request.path_params
     workspace_id = params.get("workspace_id")
     if workspace_id is not None:
-        workspace = db.get(Workspace, int(workspace_id))
-        if workspace is None or not workspace.is_shared:
+        workspace_exists = db.scalar(select(Workspace.id).where(Workspace.id == int(workspace_id)))
+        if workspace_exists is None:
             raise HTTPException(status_code=404, detail="Workspace not found.")
+        public_catalog_route = request.url.path.endswith("/hospitals") or request.url.path.endswith("/networks")
+        if user.role != "admin" and public_catalog_route:
+            published_hospital_id = db.scalar(select(Hospital.id).where(
+                Hospital.workspace_id == int(workspace_id),
+                Hospital.available_to_users.is_(True),
+                Hospital.is_archived.is_(False),
+            ).limit(1))
+            if published_hospital_id is None:
+                raise HTTPException(status_code=404, detail="Workspace not found.")
     hospital_id = params.get("hospital_id")
-    if hospital_id is not None:
+    if hospital_id is not None and user.role != "admin":
         hospital = db.get(Hospital, int(hospital_id))
-        if hospital is None or not hospital.workspace.is_shared:
+        if hospital is None or hospital.is_archived or not hospital.available_to_users:
             raise HTTPException(status_code=404, detail="Hospital not found.")
     run_id = params.get("run_id")
     if run_id is not None:
         run = db.get(GenerationRun, str(run_id))
-        if run is None or run.guest_session_id is not None or run.deleted_at is not None or (user.role != "admin" and run.owner_user_id != user.id):
+        if run is None or run.guest_session_id is not None or run.deleted_at is not None or run.owner_user_id != user.id:
             raise HTTPException(status_code=404, detail="Dataset not found.")
     validation_id = params.get("validation_id")
     if validation_id is not None:
         report = db.get(ValidationReport, str(validation_id))
         run = db.get(GenerationRun, report.run_id) if report else None
-        if run is None or run.guest_session_id is not None or run.deleted_at is not None or (user.role != "admin" and run.owner_user_id != user.id):
+        if run is None or run.guest_session_id is not None or run.deleted_at is not None or run.owner_user_id != user.id:
             raise HTTPException(status_code=404, detail="Validation report not found.")

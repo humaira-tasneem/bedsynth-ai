@@ -197,6 +197,7 @@ class HospitalRead(BaseModel):
     name: str
     code: str
     is_archived: bool
+    available_to_users: bool = False
     departments: list[DepartmentRead] = Field(default_factory=list)
 
 
@@ -204,6 +205,7 @@ class HospitalCreate(BaseModel):
     name: str = Field(min_length=1, max_length=160)
     code: str
     network_id: int | None = None
+    available_to_users: bool = False
 
     @field_validator("name")
     @classmethod
@@ -224,6 +226,7 @@ class HospitalUpdate(BaseModel):
     code: str | None = None
     network_id: int | None = None
     is_archived: bool | None = None
+    available_to_users: bool | None = None
 
     @field_validator("name")
     @classmethod

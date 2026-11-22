@@ -93,14 +93,18 @@ def test_user_dashboard_is_owned_and_excludes_deleted_and_historical(dashboard_c
     response = dashboard_client.get("/api/v1/dashboard/user")
     assert response.status_code == 200
     body = response.json()
-    assert body["total_datasets"] == 1
+    # Ownership, rather than workspace sharing, controls dataset visibility.
+    assert body["total_datasets"] == 2
     assert body["total_generated_records"] == 3
     assert body["latest_occupancy_pct"] == 100.0
-    assert [run["run_id"] for run in body["recent_runs"]] == ["00000000-0000-0000-0000-000000000001"]
+    assert {run["run_id"] for run in body["recent_runs"]} == {
+        "00000000-0000-0000-0000-000000000001",
+        "00000000-0000-0000-0000-000000000005",
+    }
     assert dashboard_client.get("/api/v1/admin/dashboard").status_code == 403
 
 
-def test_admin_dashboard_and_dataset_listing_are_platform_wide(dashboard_client):
+def test_admin_dashboard_and_dataset_listing_are_owner_scoped(dashboard_client):
     cookies = _seed(dashboard_client)
     dashboard_client.cookies.set("bedsynth_session", cookies["admin"])
     dashboard = dashboard_client.get("/api/v1/admin/dashboard")
@@ -110,21 +114,16 @@ def test_admin_dashboard_and_dataset_listing_are_platform_wide(dashboard_client)
     assert body["active_users"] == 3
     assert body["shared_hospitals"] == 1
     assert body["departments"] == 1 and body["beds"] == 1
-    assert body["generation_runs"] == 4
-    assert body["generated_records"] == 3
+    assert body["generation_runs"] == 0
+    assert body["generated_records"] == 0
+    assert body["recent_activity"] == []
     listing = dashboard_client.get("/api/v1/admin/datasets?page_size=100")
     assert listing.status_code == 200
-    owners = {item["run_id"]: item["owner_email"] for item in listing.json()["items"]}
-    assert set(owners) == {
-        "00000000-0000-0000-0000-000000000001", "00000000-0000-0000-0000-000000000002",
-        "00000000-0000-0000-0000-000000000003", "00000000-0000-0000-0000-000000000005",
-    }
-    assert owners["00000000-0000-0000-0000-000000000001"] == "owner@bedsynth.test"
-    assert owners["00000000-0000-0000-0000-000000000003"] is None
+    assert listing.json()["items"] == []
     historical = dashboard_client.get("/api/v1/admin/datasets?ownership=historical")
-    assert [item["run_id"] for item in historical.json()["items"]] == ["00000000-0000-0000-0000-000000000003"]
+    assert historical.json()["items"] == []
     with_deleted = dashboard_client.get("/api/v1/admin/datasets?include_deleted=true")
-    assert with_deleted.json()["total"] == 5
+    assert with_deleted.json()["total"] == 0
 
 
 def test_admin_user_management_stats_filters_pagination_activity_and_detail(dashboard_client):
