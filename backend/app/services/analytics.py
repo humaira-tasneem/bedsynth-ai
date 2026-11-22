@@ -1,0 +1,623 @@
+"""Hospital-scoped analytics derived from one persisted generation run.
+
+Independent runs are separate scenarios and may cover overlapping dates. The
+service therefore selects the most recently completed run rather than blending
+multiple runs into misleading hospital totals.
+"""
+
+from collections import defaultdict
+from datetime import date, datetime, time, timedelta
+from uuid import UUID
+
+from fastapi import HTTPException
+from sqlalchemy import func, or_, select
+from sqlalchemy.orm import Session
+
+from app.models import Admission, Bed, BedTransfer, BedTurnaround, Department, Discharge, GenerationRun, Hospital, OccupancySnapshot, WaitingQueueEntry
+from app.schemas import AnalyticsComparisonRequest, AnalyticsFilters
+
+SCENARIO_NAMES = {
+    "normal_operations": "Normal Operations",
+    "high_patient_inflow": "High Patient Inflow",
+    "seasonal_disease_surge": "Seasonal Disease Surge",
+    "emergency_surge": "Emergency Surge",
+    "low_occupancy": "Low Occupancy",
+}
+
+
+def _scenario(run: GenerationRun | None) -> str | None:
+    return ((run.config or {}).get("request") or {}).get("scenario") if run else None
+
+
+def scenario_name_for_run(run: GenerationRun | None) -> str | None:
+    """Return persisted scenario name, deriving it only from a stored scenario code."""
+    if run is None:
+        return None
+    config = run.config or {}
+    scenario = ((config.get("request") or {}).get("scenario"))
+    return config.get("scenario_name") or SCENARIO_NAMES.get(scenario)
+
+
+def _run_period(run: GenerationRun | None) -> tuple[date | None, date | None]:
+    request = (run.config or {}).get("request", {}) if run else {}
+    try:
+        start = date.fromisoformat(request["start_date"]) if request.get("start_date") else None
+        end = date.fromisoformat(request["end_date"]) if request.get("end_date") else None
+        return start, end
+    except (TypeError, ValueError):
+        return None, None
+
+
+def _context(db: Session, hospital_id: int, filters: AnalyticsFilters, owner_user_id: int | None = None) -> dict:
+    hospital = db.get(Hospital, hospital_id)
+    if hospital is None:
+        raise HTTPException(status_code=404, detail="Hospital not found.")
+    department = None
+    if filters.department_id is not None:
+        department = db.scalar(select(Department).where(
+            Department.id == filters.department_id,
+            Department.hospital_id == hospital_id,
+        ))
+        if department is None:
+            raise HTTPException(status_code=404, detail="Department not found in this hospital.")
+
+    run_query = select(GenerationRun).where(
+        GenerationRun.hospital_id == hospital_id,
+        GenerationRun.guest_session_id.is_(None),
+        GenerationRun.status == "completed",
+        GenerationRun.deleted_at.is_(None),
+    ).order_by(GenerationRun.completed_at.desc(), GenerationRun.started_at.desc())
+    if owner_user_id is not None:
+        run_query = run_query.where(GenerationRun.owner_user_id == owner_user_id)
+    if filters.run_id is not None:
+        run = db.scalar(run_query.where(GenerationRun.run_id == str(filters.run_id)))
+        if run is None:
+            raise HTTPException(status_code=404, detail="Completed generation run not found for this hospital.")
+        if filters.scenario is not None and _scenario(run) != filters.scenario:
+            raise HTTPException(status_code=422, detail="The selected run does not match the requested scenario.")
+    elif filters.scenario is not None:
+        run = db.scalar(run_query.where(
+            GenerationRun.config["request"]["scenario"].as_string() == filters.scenario,
+        ).limit(1))
+    else:
+        run = db.scalar(run_query.limit(1))
+    period_start, period_end = _run_period(run)
+    start_date = filters.start_date or period_start
+    end_date = filters.end_date or period_end
+    if start_date is not None and end_date is not None:
+        if end_date < start_date:
+            raise HTTPException(status_code=422, detail="End date must be on or after start date.")
+        if (end_date - start_date).days > 365:
+            raise HTTPException(status_code=422, detail="Analytics date range cannot exceed 366 calendar days.")
+
+    run_department_ids = (run.config or {}).get("resolved_department_ids", []) if run else []
+    departments_query = select(Department).where(
+        Department.hospital_id == hospital_id,
+        Department.is_archived.is_(False),
+    ).order_by(Department.name, Department.id)
+    if run_department_ids:
+        departments_query = departments_query.where(Department.id.in_(run_department_ids))
+    if filters.department_id is not None:
+        departments_query = departments_query.where(Department.id == filters.department_id)
+    departments = list(db.scalars(departments_query).all())
+    if run and run_department_ids and filters.department_id is not None and filters.department_id not in run_department_ids:
+        raise HTTPException(status_code=422, detail="The selected department was not included in the latest completed generation run.")
+
+    start_at = datetime.combine(start_date, time.min) if start_date else None
+    end_before = datetime.combine(end_date + timedelta(days=1), time.min) if end_date else None
+    metadata = {
+        "hospital_id": hospital.id,
+        "hospital_name": hospital.name,
+        "run_id": run.run_id if run else None,
+        "run_started_at": run.started_at if run else None,
+        "seed": run.seed if run else None,
+        "scenario": _scenario(run),
+        "scenario_name": scenario_name_for_run(run),
+        "patient_profile": ((run.config or {}).get("request") or {}).get("patient_profile") if run else None,
+        "department_id": department.id if department else None,
+        "department_name": department.name if department else None,
+        "start_date": start_date,
+        "end_date": end_date,
+        "has_data": False,
+    }
+    return {
+        "hospital": hospital, "run": run, "department": department,
+        "departments": departments, "department_ids": [d.id for d in departments],
+        "departments_expected": (1 if filters.department_id is not None else len(run_department_ids or [d.id for d in departments])),
+        "start_date": start_date, "end_date": end_date,
+        "start_at": start_at, "end_before": end_before,
+        "metadata": metadata,
+    }
+
+
+def _with_period(query, column, context: dict):
+    if context["start_at"] is not None:
+        query = query.where(column >= context["start_at"])
+    if context["end_before"] is not None:
+        query = query.where(column < context["end_before"])
+    return query
+
+
+def _snapshots(db: Session, context: dict) -> list[OccupancySnapshot]:
+    run = context["run"]
+    if run is None or context["start_date"] is None or context["end_date"] is None:
+        return []
+    query = select(OccupancySnapshot).where(
+        OccupancySnapshot.run_id == run.run_id,
+        OccupancySnapshot.hospital_id == context["hospital"].id,
+    )
+    if context["department"] is not None:
+        query = query.where(OccupancySnapshot.department_id == context["department"].id)
+    return list(db.scalars(_with_period(query, OccupancySnapshot.snapshot_at, context)
+                           .order_by(OccupancySnapshot.snapshot_at, OccupancySnapshot.id)).all())
+
+
+def _daily_occupancy(snapshots: list[OccupancySnapshot]) -> tuple[list[dict], dict[tuple[date, int], OccupancySnapshot]]:
+    # If a run contains more than one snapshot for a department on a UTC date,
+    # daily charts use the latest timestamp from that day, never an interpolation.
+    latest_by_dept_day: dict[tuple[date, int], OccupancySnapshot] = {}
+    for snapshot in snapshots:
+        latest_by_dept_day[(snapshot.snapshot_at.date(), snapshot.department_id)] = snapshot
+    grouped: dict[date, list[OccupancySnapshot]] = defaultdict(list)
+    for (day, _department_id), snapshot in latest_by_dept_day.items():
+        grouped[day].append(snapshot)
+    items = []
+    for day in sorted(grouped):
+        daily = grouped[day]
+        operational = sum(row.operational_beds for row in daily)
+        occupied = sum(row.occupied_beds for row in daily)
+        available = sum(row.available_beds for row in daily)
+        items.append({
+            "date": day,
+            "operational_beds": operational,
+            "occupied_beds": occupied,
+            "available_beds": available,
+            "occupancy_pct": round(occupied / operational * 100, 2) if operational else None,
+            "departments_reporting": len(daily),
+            "snapshot_count": len(daily),
+        })
+    return items, latest_by_dept_day
+
+
+def _events(db: Session, context: dict) -> tuple[dict[date, int], dict[date, int], dict[date, int]]:
+    run = context["run"]
+    if run is None or context["start_date"] is None or context["end_date"] is None:
+        return {}, {}, {}
+    hospital_id = context["hospital"].id
+    department = context["department"]
+
+    admissions_query = select(Admission.admitted_at).where(
+        Admission.run_id == run.run_id, Admission.hospital_id == hospital_id,
+    )
+    if department:
+        admissions_query = admissions_query.where(Admission.department_id == department.id)
+    admissions = list(db.scalars(_with_period(admissions_query, Admission.admitted_at, context)).all())
+
+    discharges_query = select(Discharge.discharged_at).join(
+        Admission, Admission.id == Discharge.admission_id,
+    ).where(Discharge.run_id == run.run_id, Discharge.hospital_id == hospital_id)
+    if department:
+        discharges_query = discharges_query.where(Admission.department_id == department.id)
+    discharges = list(db.scalars(_with_period(discharges_query, Discharge.discharged_at, context)).all())
+
+    transfers_query = select(BedTransfer.transferred_at).where(
+        BedTransfer.run_id == run.run_id, BedTransfer.hospital_id == hospital_id,
+    )
+    if department:
+        transfers_query = transfers_query.where(or_(
+            BedTransfer.source_department_id == department.id,
+            BedTransfer.destination_department_id == department.id,
+        ))
+    transfers = list(db.scalars(_with_period(transfers_query, BedTransfer.transferred_at, context)).all())
+
+    def group_days(values):
+        counts: dict[date, int] = defaultdict(int)
+        for value in values:
+            counts[value.date()] += 1
+        return dict(counts)
+
+    return group_days(admissions), group_days(discharges), group_days(transfers)
+
+
+def _occupancy_stats(items: list[dict]) -> tuple[float | None, float | None, float | None]:
+    values = [item["occupancy_pct"] for item in items if item["occupancy_pct"] is not None]
+    if not values:
+        return None, None, None
+    return round(sum(values) / len(values), 2), round(max(values), 2), round(min(values), 2)
+
+
+def _average_length_of_stay_hours(db: Session, context: dict) -> float | None:
+    run = context["run"]
+    if run is None:
+        return None
+    query = select(Admission.admitted_at, Discharge.discharged_at).join(
+        Discharge, Discharge.admission_id == Admission.id,
+    ).where(
+        Admission.run_id == run.run_id,
+        Admission.hospital_id == context["hospital"].id,
+    )
+    if context["department"] is not None:
+        query = query.where(Admission.department_id == context["department"].id)
+    query = _with_period(query, Admission.admitted_at, context)
+    durations = [(discharged_at - admitted_at).total_seconds() / 3600 for admitted_at, discharged_at in db.execute(query)
+                 if discharged_at is not None and discharged_at > admitted_at]
+    return round(sum(durations) / len(durations), 2) if durations else None
+
+
+def _rule_based_observations(occupancy: list[dict], departments: list[dict]) -> list[dict]:
+    insights = []
+    peak_day = max((item for item in occupancy if item["occupancy_pct"] is not None), key=lambda item: item["occupancy_pct"], default=None)
+    if peak_day:
+        insights.append({"kind": "occupancy_peak", "text": f"The highest recorded daily occupancy in this selection was {peak_day['occupancy_pct']:.1f}% on {peak_day['date']}.", "metrics": {"occupancy_pct": peak_day["occupancy_pct"], "date": str(peak_day["date"])}})
+    valid_occupancy = [item for item in occupancy if item["occupancy_pct"] is not None]
+    average, _, _ = _occupancy_stats(valid_occupancy)
+    if average is not None and valid_occupancy:
+        relative_high = max(valid_occupancy, key=lambda item: item["occupancy_pct"])
+        relative_low = min(valid_occupancy, key=lambda item: item["occupancy_pct"])
+        if relative_high["occupancy_pct"] - average >= 10:
+            delta = round(relative_high["occupancy_pct"] - average, 2)
+            insights.append({"kind": "relative_high_period", "text": f"{relative_high['date']} was {delta:.1f} percentage points above this selection's daily average; this is a relative analytics flag, not a clinical threshold.", "metrics": {"date": str(relative_high["date"]), "difference_percentage_points": delta, "heuristic_threshold_percentage_points": 10}})
+        if average - relative_low["occupancy_pct"] >= 10:
+            delta = round(average - relative_low["occupancy_pct"], 2)
+            insights.append({"kind": "relative_low_period", "text": f"{relative_low['date']} was {delta:.1f} percentage points below this selection's daily average; this is a relative analytics flag, not a clinical threshold.", "metrics": {"date": str(relative_low["date"]), "difference_percentage_points": delta, "heuristic_threshold_percentage_points": 10}})
+    busiest = max((item for item in departments if item["admissions"] > 0), key=lambda item: item["admissions"], default=None)
+    if busiest:
+        insights.append({"kind": "department_admissions", "text": f"{busiest['department_name']} had the largest admission count in this selection ({busiest['admissions']}).", "metrics": {"department_id": busiest["department_id"], "admissions": busiest["admissions"]}})
+    return insights
+
+
+def get_run_snapshot_summary(db: Session, run: GenerationRun) -> dict:
+    """Summarize occupancy snapshots belonging only to this generation run."""
+    snapshots = list(db.scalars(select(OccupancySnapshot).where(
+        OccupancySnapshot.run_id == run.run_id,
+        OccupancySnapshot.workspace_id == run.workspace_id,
+        OccupancySnapshot.hospital_id == run.hospital_id,
+    ).order_by(OccupancySnapshot.snapshot_at, OccupancySnapshot.id)).all())
+    daily, _ = _daily_occupancy(snapshots)
+    average, peak, lowest = _occupancy_stats(daily)
+    latest = daily[-1] if daily else None
+    waiting_metrics = {
+        "waiting_requests": None, "assigned_immediately": None, "patients_who_waited": None,
+        "unresolved_requests": None, "average_wait_seconds": None, "maximum_wait_seconds": None,
+    }
+    if run.waiting_queue_count is not None:
+        requests = list(db.scalars(select(WaitingQueueEntry).where(WaitingQueueEntry.run_id == run.run_id)).all())
+        assigned = [row for row in requests if row.status == "assigned" and row.waiting_duration_seconds is not None]
+        waits = [row.waiting_duration_seconds for row in assigned]
+        waiting_metrics = {
+            "waiting_requests": len(requests),
+            "assigned_immediately": sum(value == 0 for value in waits),
+            "patients_who_waited": sum(value > 0 for value in waits),
+            "unresolved_requests": sum(row.status != "assigned" for row in requests),
+            "average_wait_seconds": sum(waits) / len(waits) if waits else 0.0,
+            "maximum_wait_seconds": max(waits, default=0),
+        }
+    turnaround_metrics = {"turnaround_events": None, "average_turnaround_seconds": None, "turnaround_bed_hours": None}
+    if run.bed_turnaround_count is not None:
+        rows = list(db.scalars(select(BedTurnaround).where(BedTurnaround.run_id == run.run_id)).all())
+        durations = [row.duration_seconds for row in rows]
+        turnaround_metrics = {
+            "turnaround_events": len(rows),
+            "average_turnaround_seconds": sum(durations) / len(durations) if durations else 0.0,
+            "turnaround_bed_hours": sum(durations) / 3600,
+        }
+    return {
+        "latest_snapshot_date": latest["date"] if latest else None,
+        "latest_occupancy_pct": latest["occupancy_pct"] if latest else None,
+        "average_occupancy_pct": average,
+        "peak_occupancy_pct": peak,
+        "lowest_occupancy_pct": lowest,
+        "occupied_beds_latest": latest["occupied_beds"] if latest else None,
+        "available_beds_latest": latest["available_beds"] if latest else None,
+        "recorded_days": len(daily),
+        **waiting_metrics,
+        **turnaround_metrics,
+    }
+
+
+def get_overview(db: Session, hospital_id: int, filters: AnalyticsFilters, owner_user_id: int | None = None) -> dict:
+    context = _context(db, hospital_id, filters, owner_user_id)
+    snapshots = _snapshots(db, context)
+    occupancy, _ = _daily_occupancy(snapshots)
+    admission_days, discharge_days, transfer_days = _events(db, context)
+    context["metadata"]["has_data"] = bool(snapshots or admission_days or discharge_days or transfer_days)
+    average, peak, lowest = _occupancy_stats(occupancy)
+    latest = occupancy[-1] if occupancy else None
+    operational_query = select(Bed.id).join(Department, Department.id == Bed.department_id).where(
+        Bed.hospital_id == hospital_id,
+        Bed.status == "operational",
+        Department.is_archived.is_(False),
+    )
+    if context["run"] and context["run"].config.get("resolved_department_ids"):
+        operational_query = operational_query.where(Bed.department_id.in_(context["run"].config["resolved_department_ids"]))
+    if context["department"]:
+        operational_query = operational_query.where(Bed.department_id == context["department"].id)
+    current_operational = len(db.scalars(operational_query).all())
+    admission_by_department: dict[int, int] = {}
+    if context["run"]:
+        department_admission_query = select(Admission.department_id, func.count(Admission.id)).where(
+            Admission.run_id == context["run"].run_id,
+            Admission.hospital_id == hospital_id,
+        )
+        department_admission_query = _with_period(department_admission_query, Admission.admitted_at, context)
+        if context["department"]:
+            department_admission_query = department_admission_query.where(Admission.department_id == context["department"].id)
+        admission_by_department.update(dict(db.execute(department_admission_query.group_by(Admission.department_id)).all()))
+    display_departments = {department.id: department.name for department in context["departments"]}
+    insight_departments = [{"department_id": department_id, "department_name": display_departments.get(department_id, "Department"), "admissions": count}
+                           for department_id, count in admission_by_department.items()]
+    return {
+        "metadata": context["metadata"],
+        "insights": _rule_based_observations(occupancy, insight_departments),
+        "metrics": {
+            "operational_beds": current_operational,
+            "occupied_beds_latest": latest["occupied_beds"] if latest else None,
+            "available_beds_latest": latest["available_beds"] if latest else None,
+            "latest_occupancy_pct": latest["occupancy_pct"] if latest else None,
+            "latest_occupancy_date": latest["date"] if latest else None,
+            "departments_reporting_latest": latest["departments_reporting"] if latest else 0,
+            "departments_expected": context["departments_expected"],
+            "average_occupancy_pct": average,
+            "peak_occupancy_pct": peak,
+            "lowest_occupancy_pct": lowest,
+            "average_length_of_stay_hours": _average_length_of_stay_hours(db, context),
+            "admissions": sum(admission_days.values()),
+            "discharges": sum(discharge_days.values()),
+            "transfers": sum(transfer_days.values()),
+            "occupancy_snapshots": len(snapshots),
+        },
+    }
+
+
+def get_occupancy(db: Session, hospital_id: int, filters: AnalyticsFilters, owner_user_id: int | None = None) -> dict:
+    context = _context(db, hospital_id, filters, owner_user_id)
+    snapshots = _snapshots(db, context)
+    items, _ = _daily_occupancy(snapshots)
+    context["metadata"]["has_data"] = bool(snapshots)
+    return {"metadata": context["metadata"], "items": items}
+
+
+def get_patient_flow(db: Session, hospital_id: int, filters: AnalyticsFilters, owner_user_id: int | None = None) -> dict:
+    context = _context(db, hospital_id, filters, owner_user_id)
+    admission_days, discharge_days, transfer_days = _events(db, context)
+    has_snapshot = bool(_snapshots(db, context))
+    has_events = bool(admission_days or discharge_days or transfer_days)
+    context["metadata"]["has_data"] = has_snapshot or has_events
+    items = []
+    if context["metadata"]["has_data"] and context["start_date"] is not None and context["end_date"] is not None:
+        day = context["start_date"]
+        while day <= context["end_date"]:
+            items.append({
+                "date": day,
+                "admissions": admission_days.get(day, 0),
+                "discharges": discharge_days.get(day, 0),
+                "transfers": transfer_days.get(day, 0),
+            })
+            day += timedelta(days=1)
+    return {"metadata": context["metadata"], "items": items}
+
+
+def get_departments(db: Session, hospital_id: int, filters: AnalyticsFilters, owner_user_id: int | None = None) -> dict:
+    context = _context(db, hospital_id, filters, owner_user_id)
+    snapshots = _snapshots(db, context)
+    occupancy, latest_by_dept_day = _daily_occupancy(snapshots)
+    admission_days, discharge_days, transfer_days = _events(db, context)
+    context["metadata"]["has_data"] = bool(snapshots or admission_days or discharge_days or transfer_days)
+
+    snapshots_by_department: dict[int, list[tuple[date, OccupancySnapshot]]] = defaultdict(list)
+    for (day, department_id), snapshot in latest_by_dept_day.items():
+        snapshots_by_department[department_id].append((day, snapshot))
+    operational_query = select(Bed.department_id, Bed.id).join(Department, Department.id == Bed.department_id).where(
+        Bed.hospital_id == hospital_id,
+        Bed.status == "operational",
+        Department.is_archived.is_(False),
+    )
+    if context["run"] and context["run"].config.get("resolved_department_ids"):
+        operational_query = operational_query.where(Bed.department_id.in_(context["run"].config["resolved_department_ids"]))
+    operational_by_department: dict[int, int] = defaultdict(int)
+    for department_id, _bed_id in db.execute(operational_query):
+        operational_by_department[department_id] += 1
+
+    transfer_routes = []
+    incoming_by_department: dict[int, int] = defaultdict(int)
+    outgoing_by_department: dict[int, int] = defaultdict(int)
+    if context["run"]:
+        route_query = select(
+            BedTransfer.source_department_id,
+            BedTransfer.destination_department_id,
+            func.count(BedTransfer.id),
+        ).where(
+            BedTransfer.run_id == context["run"].run_id,
+            BedTransfer.hospital_id == hospital_id,
+        )
+        route_query = _with_period(route_query, BedTransfer.transferred_at, context)
+        if context["department"] is not None:
+            route_query = route_query.where(or_(
+                BedTransfer.source_department_id == context["department"].id,
+                BedTransfer.destination_department_id == context["department"].id,
+            ))
+        route_query = route_query.group_by(BedTransfer.source_department_id, BedTransfer.destination_department_id)
+        department_names = {department.id: department.name for department in db.scalars(select(Department).where(Department.hospital_id == hospital_id)).all()}
+        for source_id, destination_id, count in db.execute(route_query):
+            transfer_routes.append({
+                "source_department_id": source_id,
+                "source_department_name": department_names.get(source_id, "Department outside display scope"),
+                "destination_department_id": destination_id,
+                "destination_department_name": department_names.get(destination_id, "Department outside display scope"),
+                "transfers": count,
+            })
+            outgoing_by_department[source_id] += count
+            incoming_by_department[destination_id] += count
+        transfer_routes.sort(key=lambda row: (-row["transfers"], row["source_department_name"], row["destination_department_name"]))
+
+    admissions_by_department: dict[int, int] = defaultdict(int)
+    if context["run"]:
+        admissions_query = select(Admission.department_id, func.count(Admission.id)).where(
+            Admission.run_id == context["run"].run_id,
+            Admission.hospital_id == hospital_id,
+        )
+        admissions_query = _with_period(admissions_query, Admission.admitted_at, context)
+        if context["department"] is not None:
+            admissions_query = admissions_query.where(Admission.department_id == context["department"].id)
+        admissions_query = admissions_query.group_by(Admission.department_id)
+        admissions_by_department.update(dict(db.execute(admissions_query).all()))
+
+    results = []
+    for department in context["departments"]:
+        recorded = sorted(snapshots_by_department.get(department.id, []), key=lambda pair: pair[0])
+        daily_percentages = [
+            round(snapshot.occupied_beds / snapshot.operational_beds * 100, 2)
+            for _day, snapshot in recorded if snapshot.operational_beds > 0
+        ]
+        latest_snapshot = recorded[-1][1] if recorded else None
+        department_admissions = admissions_by_department.get(department.id, 0)
+        results.append({
+            "department_id": department.id,
+            "department_name": department.name,
+            "department_code": department.code,
+            "operational_beds": operational_by_department.get(department.id, 0),
+            "occupied_beds_latest": latest_snapshot.occupied_beds if latest_snapshot else None,
+            "available_beds_latest": latest_snapshot.available_beds if latest_snapshot else None,
+            "latest_occupancy_pct": (round(latest_snapshot.occupied_beds / latest_snapshot.operational_beds * 100, 2)
+                                     if latest_snapshot and latest_snapshot.operational_beds else None),
+            "average_occupancy_pct": round(sum(daily_percentages) / len(daily_percentages), 2) if daily_percentages else None,
+            "peak_occupancy_pct": max(daily_percentages) if daily_percentages else None,
+            "lowest_occupancy_pct": min(daily_percentages) if daily_percentages else None,
+            "snapshots": len(recorded),
+            "admissions": department_admissions,
+            "admission_share_pct": round(department_admissions / sum(admission_days.values()) * 100, 2) if sum(admission_days.values()) else None,
+            "incoming_transfers": incoming_by_department.get(department.id, 0),
+            "outgoing_transfers": outgoing_by_department.get(department.id, 0),
+            "daily_occupancy": [{
+                "date": day,
+                "occupied_beds": snapshot.occupied_beds,
+                "operational_beds": snapshot.operational_beds,
+                "occupancy_pct": round(snapshot.occupied_beds / snapshot.operational_beds * 100, 2) if snapshot.operational_beds else None,
+            } for day, snapshot in recorded],
+        })
+    return {"metadata": context["metadata"], "items": results, "transfer_routes": transfer_routes}
+
+
+def list_analytics_runs(db: Session, hospital_id: int, owner_user_id: int | None = None) -> list[dict]:
+    hospital = db.get(Hospital, hospital_id)
+    if hospital is None:
+        raise HTTPException(status_code=404, detail="Hospital not found.")
+    runs = db.scalars(select(GenerationRun).where(
+        GenerationRun.hospital_id == hospital_id,
+        GenerationRun.guest_session_id.is_(None),
+        GenerationRun.status == "completed",
+        GenerationRun.deleted_at.is_(None),
+    ).order_by(GenerationRun.completed_at.desc(), GenerationRun.started_at.desc())).all()
+    if owner_user_id is not None:
+        runs = [run for run in runs if run.owner_user_id == owner_user_id]
+    result = []
+    for run in runs:
+        request = (run.config or {}).get("request") or {}
+        start, end = _run_period(run)
+        department_ids = (run.config or {}).get("resolved_department_ids", [])
+        departments = list(db.scalars(select(Department).where(Department.id.in_(department_ids)).order_by(Department.name)).all()) if department_ids else []
+        scenario = _scenario(run)
+        result.append({
+            "run_id": run.run_id,
+            "hospital_id": run.hospital_id,
+            "hospital_name": hospital.name,
+            "started_at": run.started_at,
+            "completed_at": run.completed_at or run.started_at,
+            "start_date": start,
+            "end_date": end,
+            "scenario": scenario,
+            "scenario_name": scenario_name_for_run(run),
+            "seed": run.seed,
+            "patient_profile": request.get("patient_profile"),
+            "patients_count": run.patients_count,
+            "admissions_count": run.admissions_count,
+            "departments": [{"id": department.id, "name": department.name, "code": department.code} for department in departments],
+        })
+    return result
+
+
+def compare_analytics_runs(db: Session, request: AnalyticsComparisonRequest, owner_user_id: int | None = None) -> dict:
+    runs = list(db.scalars(select(GenerationRun).where(
+        GenerationRun.run_id.in_([str(run_id) for run_id in request.run_ids]),
+        GenerationRun.guest_session_id.is_(None),
+        GenerationRun.status == "completed",
+        GenerationRun.deleted_at.is_(None),
+    )).all())
+    if owner_user_id is not None:
+        runs = [run for run in runs if run.owner_user_id == owner_user_id]
+    if len(runs) != len(request.run_ids):
+        raise HTTPException(status_code=404, detail="One or more selected runs are missing or not completed.")
+    if len({run.hospital_id for run in runs}) != 1 or len({run.workspace_id for run in runs}) != 1:
+        raise HTTPException(status_code=422, detail="Compare runs from the same hospital and workspace only.")
+    scopes = {tuple(sorted((run.config or {}).get("resolved_department_ids", []))) for run in runs}
+    if len(scopes) > 1:
+        raise HTTPException(status_code=422, detail="Selected runs must include the same department scope to be comparable.")
+    hospital_id = runs[0].hospital_id
+    if request.department_id is not None:
+        if request.department_id not in next(iter(scopes), ()):
+            raise HTTPException(status_code=422, detail="The selected department is outside the runs' common scope.")
+        department = db.scalar(select(Department).where(Department.id == request.department_id, Department.hospital_id == hospital_id))
+        if department is None:
+            raise HTTPException(status_code=404, detail="Department not found in the selected hospital.")
+    baseline_id = str(request.baseline_run_id or request.run_ids[0])
+    baseline = next(run for run in runs if run.run_id == baseline_id)
+    compared = []
+    request_order = {str(run_id): index for index, run_id in enumerate(request.run_ids)}
+    for run in sorted(runs, key=lambda item: request_order[item.run_id]):
+        filters = AnalyticsFilters(
+            start_date=request.start_date,
+            end_date=request.end_date,
+            department_id=request.department_id,
+            run_id=run.run_id,
+        )
+        context = _context(db, hospital_id, filters, owner_user_id)
+        snapshots = _snapshots(db, context)
+        occupancy, _ = _daily_occupancy(snapshots)
+        admission_days, discharge_days, transfer_days = _events(db, context)
+        department_analytics = get_departments(db, hospital_id, filters, owner_user_id)
+        department_rows = department_analytics["items"]
+        average, peak, lowest = _occupancy_stats(occupancy)
+        metrics = {
+            "patients": run.patients_count,
+            "admissions": sum(admission_days.values()),
+            "discharges": sum(discharge_days.values()),
+            "transfers": sum(transfer_days.values()),
+            "average_occupancy_pct": average,
+            "peak_occupancy_pct": peak,
+            "lowest_occupancy_pct": lowest,
+            "average_length_of_stay_hours": _average_length_of_stay_hours(db, context),
+        }
+        compared.append({
+            "run_id": run.run_id,
+            "hospital_id": run.hospital_id,
+            "hospital_name": context["hospital"].name,
+            "workspace_id": run.workspace_id,
+            "start_date": context["start_date"],
+            "end_date": context["end_date"],
+            "scenario": _scenario(run),
+            "scenario_name": scenario_name_for_run(run),
+            "patient_profile": ((run.config or {}).get("request") or {}).get("patient_profile"),
+            "seed": run.seed,
+            **metrics,
+            "departments": department_rows,
+            "transfer_routes": department_analytics["transfer_routes"],
+            "occupancy_trend": occupancy,
+            "metrics_vs_baseline": {},
+        })
+    baseline_metrics = next(item for item in compared if item["run_id"] == baseline_id)
+    for item in compared:
+        for metric in ("patients", "admissions", "discharges", "transfers", "average_occupancy_pct", "peak_occupancy_pct", "lowest_occupancy_pct", "average_length_of_stay_hours"):
+            current = item[metric]
+            base = baseline_metrics[metric]
+            difference = round(current - base, 2) if current is not None and base is not None else None
+            percent_change = round((difference / base) * 100, 2) if difference is not None and base not in (None, 0) else None
+            item["metrics_vs_baseline"][metric] = {"absolute_difference": difference, "percentage_change": percent_change}
+    return {"baseline_run_id": baseline_id, "items": compared}
+
+
+def get_rule_based_insights(db: Session, hospital_id: int, filters: AnalyticsFilters, owner_user_id: int | None = None) -> dict:
+    overview = get_overview(db, hospital_id, filters, owner_user_id)
+    run_id = overview["metadata"]["run_id"]
+    if run_id is None:
+        raise HTTPException(status_code=404, detail="No completed generation run is available for these filters.")
+    return {"run_id": run_id, "items": overview["insights"]}
