@@ -28,6 +28,28 @@ Interactive API docs: `http://127.0.0.1:8000/docs`
 
 The SQLite database defaults to `backend/bedsynth.db`. Startup creates current tables and applies a small, additive SQLite upgrade from the original foundation schema. It does not drop existing records. Existing departments with no configured capacity must have capacity set before beds can be added.
 
+## Fresh installation and demo hospital
+
+The backend setup above creates the Python environment and installs the declared runtime dependencies. Copy `backend/.env.example` to `backend/.env` only when a local environment file does not already exist; keep secrets local. Set `DATABASE_URL` there only if a non-default database location is needed. Run database setup commands from `backend` so the default relative URL points to `backend/bedsynth.db`.
+
+Initialize the schema and create or complete the fictional Sunrise General Hospital configuration with the explicit, repeat-safe seed command:
+
+```powershell
+cd backend
+.\.venv313\Scripts\python.exe -m app.demo_seed
+```
+
+The command initializes the schema additively, then creates the `BedSynth Demo Workspace` if needed, `Sunrise General Hospital` (`SGH-001`), its five departments, and missing operational general beds. The initial configuration is 25 Cardiology, 20 Emergency, 30 General Medicine, 20 Neurology, and 25 Orthopedics beds. Existing matching records are reused by stable codes; administrator-edited values are preserved, and only missing beds up to each department's current configured capacity are added. Conflicts, archived configuration, missing capacity, or inventory already over capacity stop the seed without committing partial changes. It does not create accounts, generation runs, patients, or datasets. It is not run automatically on API startup.
+
+Create the first administrator safely using the existing interactive authentication CLI:
+
+```powershell
+cd backend
+.\.venv313\Scripts\python.exe -m app.auth_cli create-admin
+```
+
+The CLI prompts for the email and password; it does not supply a default password. After signing in, open **Hospital Management** and explicitly enable **Available to users** for Sunrise General Hospital. The hospital starts unpublished on a fresh seed. Normal users can register through the application, sign in, select the hospital only after publication, configure and preview a dataset, then explicitly confirm generation. Their datasets remain private to their account.
+
 ## Main routes
 
 All routes use `/api/v1`:

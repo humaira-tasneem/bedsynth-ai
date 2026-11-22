@@ -127,6 +127,17 @@ Create the first administrator interactively from `backend`:
 
 The CLI prompts for credentials and has no default password. Then run both services and visit `http://localhost:3000/login`. Standard users may register from the login page; registration cannot assign an administrator role. Admin and user dashboards are selected from the server-authenticated session.
 
+## Database initialization and demo hospital
+
+With the backend environment configured, initialize the database schema and seed the fictional sample hospital from the `backend` directory:
+
+```powershell
+cd backend
+.\.venv313\Scripts\python.exe -m app.demo_seed
+```
+
+The command is safe to rerun. It creates or completes Sunrise General Hospital (`SGH-001`) with Cardiology (25 beds), Emergency (20), General Medicine (30), Neurology (20), and Orthopedics (25), for 120 beds on a fresh installation. It preserves administrator-edited configuration and adds only missing beds up to current department capacities. It does not create administrator credentials or synthetic datasets. A newly seeded hospital remains unpublished. Sign in as an administrator, open Hospital Management, and enable **Available to users** when you want registered users to select it. Normal users register through the application, then select an active published hospital on the Generator page, preview and validate their settings, and explicitly confirm generation.
+
 ## Run the application
 
 Start the API from `backend`:
