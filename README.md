@@ -227,18 +227,16 @@ Set-Location .\backend
 .\.venv313\Scripts\python.exe -m app.demo_seed
 ```
 
-The command is explicit and repeat-safe. On a fresh database, it creates the `BedSynth Demo Workspace`, **Sunrise General Hospital** (`SGH-001`), and these departments and capacities:
+The command is explicit and repeat-safe. On a fresh database, it creates the `BedSynth Demo Workspace` and four fictional hospital configurations:
 
-| Department | Capacity |
-| --- | ---: |
-| Cardiology | 25 beds |
-| Emergency | 20 beds |
-| General Medicine | 30 beds |
-| Neurology | 20 beds |
-| Orthopedics | 25 beds |
-| **Total** | **120 beds** |
+| Hospital | Code | Departments and bed capacities | Total |
+| --- | --- | --- | ---: |
+| **Sunrise General Hospital** | `SGH-001` | Cardiology 25, Emergency 20, General Medicine 30, Neurology 20, Orthopedics 25 | **120** |
+| **CityCare Multispecialty Hospital** | `CCH-001` | Emergency 35, Cardiology 30, General Medicine 40, Neurology 20, Orthopedics 25, Pediatrics 25, Obstetrics & Gynecology 25 | **200** |
+| **Green Valley Community Hospital** | `GVCH-001` | Emergency 10, General Medicine 25, Pediatrics 15, Maternity 10 | **60** |
+| **Apex Specialty Hospital** | `ASH-001` | Cardiology 35, Cardiothoracic Surgery 20, Neurology 15, Orthopedics 15, Oncology 15 | **100** |
 
-The seed command does not create an administrator, user, synthetic patient, generation run, or dataset. It preserves matching existing configuration and adds only missing beds up to the departments' current configured capacities. A newly seeded hospital remains unpublished.
+The seed command does not create an administrator, user, synthetic patient, generation run, or dataset. It preserves existing hospital, department, and bed settings, adding only missing departments and beds up to each department's current configured capacity. Newly created hospitals default to unpublished; existing publication settings are preserved.
 
 Create the first administrator through the existing interactive CLI; it prompts for credentials and does not provide a default password:
 
@@ -247,7 +245,7 @@ Set-Location .\backend
 .\.venv313\Scripts\python.exe -m app.auth_cli create-admin
 ```
 
-Sign in through the application, open **Hospital Management**, and enable **Available to users** for Sunrise General Hospital when it is ready to be used. Registered normal users can then select that active published hospital in the Generator, configure their run, request and review a preview, and explicitly confirm generation.
+Sign in through the application, open **Hospital Management**, and enable **Available to users** for each hospital when it is ready to be used. Registered normal users can then select active published hospitals in the Generator, configure a run, request and review a preview, and explicitly confirm generation.
 
 ## Security and Data Privacy
 
