@@ -37,14 +37,27 @@ Production requires an explicit `DATABASE_URL`; the SQLite file must be beneath 
 
 For Vercel's same-origin API proxy, set the frontend's server-side `BACKEND_API_URL` to the Railway HTTPS origin. The browser's `Origin` is forwarded and must be included exactly in `FRONTEND_ORIGINS`; the session cookie can use `SameSite=Lax` because the browser communicates with the frontend origin. If bypassing the proxy with `NEXT_PUBLIC_API_BASE_URL`, use HTTPS, `SESSION_COOKIE_SAMESITE=none`, and `SESSION_COOKIE_SECURE=true`; browser cross-site cookie restrictions may still apply.
 
-After attaching the volume and setting the same production database URL used by the running service, create the first administrator and seed the demo hospitals using a Railway one-off command or shell:
+### One-time production bootstrap
 
-```sh
-python -m app.auth_cli create-admin
-python -m app.demo_seed
+For a fresh production database, bootstrap the administrator and demo hospitals together using Railway's temporary **Start Command**. Do not use `auth_cli` or `demo_seed` separately for this production initialization. The command refuses any database with existing application rows or user accounts, requires the exact production database path `sqlite:////data/bedsynth.db`, and records a persistent completion marker. A second invocation is a no-op. The administrator and hospital seed writes use one transaction; a failed attempt rolls them back, although additive empty schema tables may remain.
+
+First attach the persistent Railway volume at `/data` and configure the normal production variables: `APP_ENV=production`, `DATABASE_URL=sqlite:////data/bedsynth.db`, and `FRONTEND_ORIGINS` as one or more exact HTTPS origins. Keep the normal cookie settings and frontend proxy configuration in place. Then temporarily add these Railway variables (enter the password through Railway's variable editor; use a unique 12–128 character password):
+
+```text
+BEDSY_AI_PRODUCTION_BOOTSTRAP_ENABLED=true
+BEDSY_AI_BOOTSTRAP_ADMIN_EMAIL=<administrator email>
+BEDSY_AI_BOOTSTRAP_ADMIN_PASSWORD=<unique strong password>
 ```
 
-The administrator CLI prompts for credentials. The explicit seed command is repeat-safe, creates no users or datasets, and leaves hospitals unpublished. Run it only after the persistent volume is mounted, never during build or pre-deploy.
+With the Railway service root directory set to `backend`, temporarily use this Start Command:
+
+```sh
+python -m app.bootstrap_production && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+```
+
+Credentials are read only from environment variables and are never command-line arguments or printed. If bootstrap exits unsuccessfully, `&&` prevents Uvicorn from starting. Do not put credentials in the Start Command or source control. Do not run this process during image build or before `/data` is mounted.
+
+After the service starts, verify `GET /health`, sign in as the new administrator, and confirm the four fictional hospitals appear in Hospital Management. Immediately remove all three `BEDSY_AI_*BOOTSTRAP*` variables, restore the regular Start Command `uvicorn app.main:app --host 0.0.0.0 --port $PORT`, and redeploy. Publish each hospital explicitly in Hospital Management; all newly seeded hospitals remain unpublished by default. The normal interactive `auth_cli` procedure below applies to local development only.
 
 Health: `http://127.0.0.1:8000/health`  
 Interactive API docs: `http://127.0.0.1:8000/docs`

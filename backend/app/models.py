@@ -73,6 +73,18 @@ class User(Base):
     generation_runs: Mapped[list["GenerationRun"]] = relationship(back_populates="owner")
 
 
+class ProductionBootstrapRecord(Base):
+    """Persistent marker that the one-time production bootstrap succeeded."""
+    __tablename__ = "production_bootstrap_records"
+    __table_args__ = (CheckConstraint("id = 1", name="ck_production_bootstrap_singleton"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    admin_user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), unique=True, nullable=False,
+    )
+    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
 class UserSession(Base):
     __tablename__ = "user_sessions"
 

@@ -256,14 +256,25 @@ For direct browser-to-Railway API requests instead of the proxy, set `NEXT_PUBLI
 
 ### First-time setup and production verification
 
-After Railway has mounted `/data` and the backend is configured, use a one-off Railway shell/command in the backend service with the same environment and volume to create the administrator and seed the fictional hospital configuration:
+The first production database must be initialized once, after the persistent volume is mounted and all production settings are present. Use the temporary Railway Start Command procedure below; do not run `auth_cli` and `demo_seed` separately against production. The bootstrap command accepts credentials only from Railway environment variables, refuses any database containing application data or user accounts, and records a persistent completion marker. It creates the administrator and four fictional demo hospitals in one transaction. Newly created hospitals remain unpublished.
 
-```sh
-python -m app.auth_cli create-admin
-python -m app.demo_seed
+Temporarily add these Railway service variables. Set the administrator password in Railway's variable editor; use a unique 12–128 character password and never put it in a command, source file, or log:
+
+```text
+BEDSY_AI_PRODUCTION_BOOTSTRAP_ENABLED=true
+BEDSY_AI_BOOTSTRAP_ADMIN_EMAIL=<administrator email>
+BEDSY_AI_BOOTSTRAP_ADMIN_PASSWORD=<unique strong password>
 ```
 
-The administrator command prompts for credentials. The seed command is explicit and repeat-safe; it does not create users or generated datasets, and hospitals remain unpublished until an administrator publishes them in Hospital Management. Do not run either command during the image build or before the persistent volume is mounted.
+Temporarily replace the Railway service Start Command with:
+
+```sh
+python -m app.bootstrap_production && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+```
+
+Keep the Railway root directory as `backend`. The command runs the one-time bootstrap first and starts FastAPI normally only when bootstrap succeeds or has already completed. It requires `APP_ENV=production`, `DATABASE_URL=sqlite:////data/bedsynth.db`, valid exact HTTPS `FRONTEND_ORIGINS`, and the `/data` persistent volume. It refuses to run against a different database path or a database containing existing application rows. A failed bootstrap rolls back account and seed records; additive empty schema tables may remain.
+
+After the deployment starts successfully, verify `/health`, sign in with the administrator account, and confirm the four hospitals appear in Hospital Management. Then immediately remove all three `BEDSY_AI_*BOOTSTRAP*` variables, restore the normal Start Command `uvicorn app.main:app --host 0.0.0.0 --port $PORT`, and redeploy. The database marker prevents a second bootstrap from creating accounts or reseeding. Publish hospitals explicitly in Hospital Management before normal users select them.
 
 Before inviting users, verify `https://<your-railway-domain>/health` returns a healthy API/database response; sign in through the Vercel domain; confirm the session survives navigation and refresh; publish a demo hospital; register a normal user; then test hospital selection, preview, explicit generation confirmation, dataset ownership, analytics, validation, and CSV downloads. Test a Vercel Preview deployment separately and add its exact origin to `FRONTEND_ORIGINS` only if it should be allowed to use the backend.
 
