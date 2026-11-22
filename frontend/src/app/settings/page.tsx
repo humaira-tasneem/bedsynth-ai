@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Activity, Check, CircleHelp, Database, Eye, KeyRound, LockKeyhole, LogOut, ShieldCheck, UserRound, X } from "lucide-react";
+import { Check, KeyRound, LockKeyhole, LogOut, ShieldCheck, UserRound, X } from "lucide-react";
 
 const apiBase = (process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
 type Account = { id: number; email: string; role: "admin" | "user"; is_active: boolean; created_at: string; last_login_at: string | null };
@@ -56,7 +56,7 @@ export default function SettingsPage() {
     {success && <div className="settings-feedback success" role="status">{success}<button type="button" aria-label="Dismiss message" onClick={() => setSuccess("")}><X size={16} /></button></div>}
     {loading && <div className="generator-loading" role="status">Loading your settings…</div>}
     <div className="settings-center-grid">
-      <nav className="settings-index" aria-label="Settings sections"><strong>SETTINGS</strong><a href="#account"><UserRound size={16} />Account</a><a href="#security"><LockKeyhole size={16} />Security</a><a href="#privacy"><Eye size={16} />Data &amp; privacy</a><a href="#about"><CircleHelp size={16} />About</a></nav>
+      <nav className="settings-index" aria-label="Settings sections"><strong>SETTINGS</strong><a href="#account"><UserRound size={16} />Account</a><a href="#security"><LockKeyhole size={16} />Security</a></nav>
       <div className="settings-sections">
         <section className="settings-panel" id="account"><header><span><UserRound size={18} /></span><div><h2>Account profile</h2><p>Read-only account information from your authenticated session.</p></div></header>
           {account && <dl className="settings-account-grid"><div><dt>Email</dt><dd>{account.email}</dd></div><div><dt>Role</dt><dd>{account.role === "admin" ? "Administrator" : "Standard user"}</dd></div><div><dt>Account status</dt><dd><span className={`settings-status ${account.is_active ? "active" : "inactive"}`}>{account.is_active ? "Active" : "Deactivated"}</span></dd></div><div><dt>Registered</dt><dd>{dateTime(account.created_at)}</dd></div><div><dt>Last successful login</dt><dd>{account.last_login_at ? dateTime(account.last_login_at) : "Not recorded yet"}</dd></div></dl>}
@@ -68,9 +68,7 @@ export default function SettingsPage() {
           <form className="settings-password-form" onSubmit={(event) => void changePassword(event)}><div className="settings-form-heading"><KeyRound size={17} /><div><strong>Change password</strong><small>Use at least 12 characters. Your current password is required.</small></div></div><label>Current password<input type="password" autoComplete="current-password" required minLength={1} maxLength={128} value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></label><div className="settings-password-grid"><label>New password<input type="password" autoComplete="new-password" required minLength={12} maxLength={128} value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /></label><label>Confirm new password<input type="password" autoComplete="new-password" required minLength={12} maxLength={128} value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} /></label></div><button className="button button-primary" type="submit" disabled={passwordBusy}>{passwordBusy ? "Updating…" : "Update password"}</button></form>
         </section>
 
-        <section className="settings-panel" id="privacy"><header><span><Database size={18} /></span><div><h2>Data &amp; privacy</h2><p>How BedSynth AI handles generated operational data.</p></div></header><ul className="settings-privacy-list"><li>BedSynth AI generates synthetic hospital operations data and does not connect to real patient records.</li><li>Dataset ownership and workspace access rules apply to saved runs.</li><li>Normal users can select active hospitals after an administrator marks them available to users in Hospital Management.</li></ul></section>
 
-        <section className="settings-panel" id="about"><header><span><Activity size={18} /></span><div><h2>About BedSynth AI</h2><p>A synthetic hospital operations data studio for model testing.</p></div></header><div className="settings-about"><div className="settings-brand-mark"><Activity size={21} /></div><div><strong>BedSynth AI</strong><p>Configure virtual hospitals, generate reproducible synthetic operational datasets, and evaluate them for bed-occupancy and scheduling research.</p><small>Next.js · React · TypeScript · FastAPI · Python · SQLAlchemy · SQLite</small></div></div></section>
       </div>
     </div>
   </main>;
