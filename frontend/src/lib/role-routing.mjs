@@ -4,7 +4,6 @@ export function landingPathForRole(role) {
 
 export function restrictedDestination(role, pathname) {
   const retiredRoutes = pathname === "/admin" || pathname.startsWith("/admin/")
-    || pathname === "/users" || pathname.startsWith("/users/")
     || pathname === "/assistant" || pathname.startsWith("/assistant/")
     || pathname === "/guest" || pathname.startsWith("/guest/");
   if (role === "admin") {
@@ -12,6 +11,7 @@ export function restrictedDestination(role, pathname) {
       ? "/hospitals"
       : null;
   }
+  if (pathname === "/users" || pathname.startsWith("/users/")) return "/";
   if (retiredRoutes) return "/";
   if (pathname === "/hospitals" || pathname.startsWith("/hospitals/")) return "/generate";
   return null;

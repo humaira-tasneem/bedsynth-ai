@@ -25,13 +25,13 @@ test("landing page presents the simplified workflow and honest sample preview", 
 test("sidebar contains only approved role destinations", () => {
   const adminNav = shell.slice(shell.indexOf("const adminNavigationGroups"), shell.indexOf("const userNavigationGroups"));
   const userNav = shell.slice(shell.indexOf("const userNavigationGroups"), shell.indexOf("function routeLabel"));
-  for (const [path, label] of [["/hospitals", "Hospital Management"], ["/generate", "Generate Dataset"], ["/datasets", "My Datasets"], ["/analytics", "Analytics"], ["/settings", "My Account"]]) {
+  for (const [path, label] of [["/hospitals", "Hospital Management"], ["/users", "User Management"], ["/generate", "Generate Dataset"], ["/datasets", "My Datasets"], ["/analytics", "Analytics"], ["/settings", "My Account"]]) {
     assert.ok(adminNav.includes(`href: "${path}"`) && adminNav.includes(`label: "${label}"`));
   }
   for (const [path, label] of [["/", "Dashboard"], ["/generate", "Generate Dataset"], ["/datasets", "My Datasets"], ["/analytics", "Analytics"], ["/validation", "Data Validation"], ["/settings", "My Account"]]) {
     assert.ok(userNav.includes(`href: "${path}"`) && userNav.includes(`label: "${label}"`));
   }
-  for (const hiddenPath of ["/admin", "/admin/datasets", "/users", "/assistant", "/guest"]) {
+  for (const hiddenPath of ["/admin", "/admin/datasets", "/assistant", "/guest"]) {
     assert.equal(adminNav.includes(`href: "${hiddenPath}"`), false);
     assert.equal(userNav.includes(`href: "${hiddenPath}"`), false);
   }

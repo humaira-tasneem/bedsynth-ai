@@ -17,11 +17,12 @@ from app.auth import (
     current_user, hash_password, normalize_email, revoke_session, verify_password,
 )
 from app.database import get_db
-from app.models import AccountActivityEvent, GenerationRun, User, UserSession, Workspace
+from app.models import AccountActivityEvent, Department, GenerationRun, Hospital, User, UserSession, Workspace
 from app.services.account_activity import record_account_activity
 from app.schemas import (AdminUserItem, AdminUserPage, AdminUserStats, LoginRequest, RegisterRequest,
                          RegistrationActivity, RegistrationPeriodStats, RegistrationSeries, AccountSettingsRead,
                          PasswordChangeRequest, AccountActivityPage, UserRead, UserUpdate, WorkspaceRead, WorkspaceSharingUpdate)
+from app.schemas import AdminUserOverviewDetail, AdminUserOverviewPage
 from app.security import login_limiter, registration_limiter
 
 router = APIRouter(prefix="/api/v1/auth", tags=["authentication"])
@@ -202,6 +203,104 @@ def user_stats(db: Session = Depends(get_db)) -> dict:
     total, active, admins, users, new7, new30 = (int(value or 0) for value in values)
     return {"total_accounts": total, "active_accounts": active, "deactivated_accounts": total - active,
             "administrators": admins, "standard_users": users, "registrations_7d": new7, "registrations_30d": new30}
+
+
+def _overview_user(user: User, dataset_count: int, latest_generation_at: datetime | None) -> dict:
+    return {"id": user.id, "email": user.email, "role": user.role,
+            "registered_at": user.created_at, "completed_dataset_count": dataset_count,
+            "latest_generation_at": latest_generation_at}
+
+
+@admin_router.get("/overview/users", response_model=AdminUserOverviewPage)
+def list_user_overview(page: int = Query(default=1, ge=1), page_size: int = Query(default=20, ge=1, le=100),
+                       db: Session = Depends(get_db)) -> dict:
+    total = int(db.scalar(select(func.count(User.id))) or 0)
+    users = list(db.scalars(select(User).order_by(User.created_at.desc(), User.id.desc())
+                            .offset((page - 1) * page_size).limit(page_size)).all())
+    user_ids = [user.id for user in users]
+    aggregates: dict[int, tuple[int, datetime | None]] = {}
+    if user_ids:
+        rows = db.execute(select(
+            GenerationRun.owner_user_id,
+            func.sum(case((GenerationRun.status == "completed", 1), else_=0)),
+            func.max(func.coalesce(GenerationRun.completed_at, GenerationRun.started_at)),
+        ).where(
+            GenerationRun.owner_user_id.in_(user_ids), GenerationRun.guest_session_id.is_(None),
+            GenerationRun.deleted_at.is_(None),
+        ).group_by(GenerationRun.owner_user_id)).all()
+        aggregates = {int(owner_id): (int(count or 0), latest) for owner_id, count, latest in rows}
+    items = [_overview_user(user, *aggregates.get(user.id, (0, None))) for user in users]
+    return {"items": items, "total": total, "page": page, "page_size": page_size,
+            "pages": math.ceil(total / page_size) if total else 0}
+
+
+@admin_router.get("/overview/users/{user_id}", response_model=AdminUserOverviewDetail)
+def get_user_overview(user_id: int, page: int = Query(default=1, ge=1),
+                      page_size: int = Query(default=10, ge=1, le=50), db: Session = Depends(get_db)) -> dict:
+    user = db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found.")
+    run_filter = (GenerationRun.owner_user_id == user.id, GenerationRun.guest_session_id.is_(None),
+                  GenerationRun.deleted_at.is_(None))
+    total_runs = int(db.scalar(select(func.count(GenerationRun.run_id)).where(*run_filter)) or 0)
+    pairs = db.execute(select(GenerationRun, Hospital.name).join(
+        Hospital, (Hospital.id == GenerationRun.hospital_id) & (Hospital.workspace_id == GenerationRun.workspace_id)
+    ).where(*run_filter).order_by(GenerationRun.started_at.desc(), GenerationRun.run_id.desc())
+                       .offset((page - 1) * page_size).limit(page_size)).all()
+    runs = [run for run, _ in pairs]
+    from app.services.datasets import _record_counts
+    from app.services.analytics import scenario_name_for_run
+    from datetime import date
+
+    record_counts = _record_counts(db, runs)
+    department_ids = {int(dept_id) for run in runs for dept_id in ((run.config or {}).get("resolved_department_ids") or [])
+                      if isinstance(dept_id, int)}
+    department_names: dict[tuple[int, int], str] = {}
+    if department_ids:
+        department_names = {(row.id, row.hospital_id): row.name for row in db.scalars(select(Department).where(
+            Department.id.in_(department_ids), Department.hospital_id.in_({run.hospital_id for run in runs})
+        )).all()}
+
+    def parsed_date(value):
+        try:
+            return date.fromisoformat(value) if isinstance(value, str) else None
+        except ValueError:
+            return None
+
+    def safe_integer(value):
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+    def safe_percentage(value):
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+            return float(value)
+        return None
+
+    run_items = []
+    for run, hospital_name in pairs:
+        config = run.config or {}
+        request_config = config.get("request") if isinstance(config.get("request"), dict) else {}
+        counts = record_counts[run.run_id].model_dump()
+        scenario_name = scenario_name_for_run(run)
+        run_items.append({
+            "run_id": run.run_id, "hospital_name": hospital_name, "status": run.status,
+            "started_at": run.started_at, "completed_at": run.completed_at,
+            "scenario_name": scenario_name if isinstance(scenario_name, str) else None,
+            "configured_start_date": parsed_date(request_config.get("start_date")),
+            "configured_end_date": parsed_date(request_config.get("end_date")),
+            "target_admissions": safe_integer(request_config.get("target_admissions", request_config.get("admissions_count"))),
+            "target_occupancy_pct": safe_percentage(request_config.get("target_occupancy_pct")), "seed": run.seed,
+            "departments": [department_names[(dept_id, run.hospital_id)]
+                            for dept_id in (config.get("resolved_department_ids") or [])
+                            if (dept_id, run.hospital_id) in department_names],
+            "record_counts": counts,
+        })
+    # Aggregate displayed dataset count uses the same completed, visible run definition as My Datasets.
+    dataset_count, latest = db.execute(select(
+        func.sum(case((GenerationRun.status == "completed", 1), else_=0)),
+        func.max(func.coalesce(GenerationRun.completed_at, GenerationRun.started_at)),
+    ).where(*run_filter)).one()
+    return {**_overview_user(user, int(dataset_count or 0), latest), "runs": run_items,
+            "total_runs": total_runs, "page": page, "page_size": page_size}
 
 
 @admin_router.get("/users/activity", response_model=RegistrationActivity)

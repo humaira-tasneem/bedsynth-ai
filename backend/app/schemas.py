@@ -71,6 +71,46 @@ class AdminUserPage(BaseModel):
     page_size: int
     pages: int
 
+
+class AdminUserOverviewItem(BaseModel):
+    id: int
+    email: str
+    role: Literal["admin", "user"]
+    registered_at: datetime
+    completed_dataset_count: int
+    latest_generation_at: datetime | None = None
+
+
+class AdminUserOverviewPage(BaseModel):
+    items: list[AdminUserOverviewItem]
+    total: int
+    page: int
+    page_size: int
+    pages: int
+
+
+class AdminUserRunMetadata(BaseModel):
+    run_id: str
+    hospital_name: str
+    status: Literal["generating", "completed", "failed"]
+    started_at: datetime
+    completed_at: datetime | None = None
+    scenario_name: str | None = None
+    configured_start_date: date | None = None
+    configured_end_date: date | None = None
+    target_admissions: int | None = None
+    target_occupancy_pct: float | None = None
+    seed: int
+    departments: list[str] = Field(default_factory=list)
+    record_counts: dict[str, int | None]
+
+
+class AdminUserOverviewDetail(AdminUserOverviewItem):
+    runs: list[AdminUserRunMetadata]
+    total_runs: int
+    page: int
+    page_size: int
+
 class AdminUserStats(BaseModel):
     total_accounts: int
     active_accounts: int

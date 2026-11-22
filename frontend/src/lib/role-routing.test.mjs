@@ -11,6 +11,7 @@ test("users are redirected away from retired features and hospital editing", () 
   assert.equal(restrictedDestination("user", "/admin"), "/");
   assert.equal(restrictedDestination("user", "/admin/datasets"), "/");
   assert.equal(restrictedDestination("user", "/users"), "/");
+  assert.equal(restrictedDestination("user", "/users/7"), "/");
   assert.equal(restrictedDestination("user", "/assistant"), "/");
   assert.equal(restrictedDestination("user", "/guest/datasets/run-123"), "/");
   assert.equal(restrictedDestination("user", "/hospitals"), "/generate");
@@ -21,7 +22,7 @@ test("role navigation destinations remain available", () => {
   for (const path of ["/generate", "/datasets", "/analytics", "/validation", "/settings"]) {
     assert.equal(restrictedDestination("user", path), null, `${path} should remain available to users`);
   }
-  for (const path of ["/hospitals", "/generate", "/datasets", "/analytics", "/settings"]) {
+  for (const path of ["/hospitals", "/users", "/users/7", "/generate", "/datasets", "/analytics", "/settings"]) {
     assert.equal(restrictedDestination("admin", path), null, `${path} should remain available to administrators`);
   }
   assert.equal(restrictedDestination("admin", "/admin/datasets"), "/hospitals");

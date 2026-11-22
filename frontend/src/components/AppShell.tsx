@@ -7,7 +7,7 @@ import { useRouter } from "next/navigation";
 import { AnimatePresence, MotionConfig, motion } from "framer-motion";
 import { landingPathForRole, restrictedDestination } from "@/lib/role-routing.mjs";
 import {
-  Activity, BarChart3, Building2, ChevronDown, Database, LogOut,
+  Activity, BarChart3, Building2, ChevronDown, Database, LogOut, Users,
   FlaskConical, LayoutDashboard, Menu, Moon, PanelLeftClose,
   PanelLeftOpen, ShieldCheck, Sun, X,
 } from "lucide-react";
@@ -21,6 +21,7 @@ function backendHealthLabel(status: "checking" | "online" | "offline") {
 const adminNavigationGroups = [
   { label: "ADMINISTRATION", items: [
     { href: "/hospitals", label: "Hospital Management", icon: Building2 },
+    { href: "/users", label: "User Management", icon: Users },
     { href: "/generate", label: "Generate Dataset", icon: FlaskConical },
     { href: "/datasets", label: "My Datasets", icon: Database },
     { href: "/analytics", label: "Analytics", icon: BarChart3 },
