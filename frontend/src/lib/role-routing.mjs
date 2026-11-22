@@ -8,8 +8,7 @@ export function restrictedDestination(role, pathname) {
     || pathname === "/assistant" || pathname.startsWith("/assistant/")
     || pathname === "/guest" || pathname.startsWith("/guest/");
   if (role === "admin") {
-    return retiredRoutes || pathname === "/analytics" || pathname.startsWith("/analytics/")
-      || pathname === "/validation" || pathname.startsWith("/validation/")
+    return retiredRoutes || pathname === "/validation" || pathname.startsWith("/validation/")
       ? "/hospitals"
       : null;
   }

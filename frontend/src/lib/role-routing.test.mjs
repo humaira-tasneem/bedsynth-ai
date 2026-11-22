@@ -21,11 +21,10 @@ test("role navigation destinations remain available", () => {
   for (const path of ["/generate", "/datasets", "/analytics", "/validation", "/settings"]) {
     assert.equal(restrictedDestination("user", path), null, `${path} should remain available to users`);
   }
-  for (const path of ["/hospitals", "/generate", "/datasets", "/settings"]) {
+  for (const path of ["/hospitals", "/generate", "/datasets", "/analytics", "/settings"]) {
     assert.equal(restrictedDestination("admin", path), null, `${path} should remain available to administrators`);
   }
   assert.equal(restrictedDestination("admin", "/admin/datasets"), "/hospitals");
-  assert.equal(restrictedDestination("admin", "/analytics"), "/hospitals");
   assert.equal(restrictedDestination("admin", "/validation"), "/hospitals");
   assert.equal(restrictedDestination("admin", "/guest/datasets/run-123"), "/hospitals");
   assert.equal(restrictedDestination("user", "/datasets"), null);

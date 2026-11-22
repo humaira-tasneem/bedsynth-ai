@@ -23,6 +23,7 @@ const adminNavigationGroups = [
     { href: "/hospitals", label: "Hospital Management", icon: Building2 },
     { href: "/generate", label: "Generate Dataset", icon: FlaskConical },
     { href: "/datasets", label: "My Datasets", icon: Database },
+    { href: "/analytics", label: "Analytics", icon: BarChart3 },
     { href: "/settings", label: "My Account", icon: Activity },
   ] },
 ];
