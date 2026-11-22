@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
@@ -36,4 +37,10 @@ test("sidebar contains only approved role destinations", () => {
   }
   assert.doesNotMatch(shell, /guestNavigationGroups|guestRouteAllowed|api\/v1\/guest/);
   assert.doesNotMatch(generator, /guestMode|guestApiPrefix|api\/v1\/guest/);
+});
+
+test("retired assistant and guest pages are absent and protected routes go to sign-in", () => {
+  assert.equal(existsSync(new URL("./assistant/page.tsx", import.meta.url)), false);
+  assert.equal(existsSync(new URL("./guest/datasets/[runId]/page.tsx", import.meta.url)), false);
+  assert.match(shell, /router\.replace\("\/login"\)/);
 });

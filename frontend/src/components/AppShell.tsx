@@ -5,7 +5,6 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AnimatePresence, MotionConfig, motion } from "framer-motion";
-import { backendHealthLabel } from "@/lib/assistant-status.mjs";
 import { landingPathForRole, restrictedDestination } from "@/lib/role-routing.mjs";
 import {
   Activity, BarChart3, Building2, ChevronDown, Database, LogOut,
@@ -14,6 +13,11 @@ import {
 } from "lucide-react";
 
 const apiBase = (process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
+function backendHealthLabel(status: "checking" | "online" | "offline") {
+  if (status === "online") return "Backend connected";
+  if (status === "offline") return "Backend unavailable";
+  return "Checking backend";
+}
 const adminNavigationGroups = [
   { label: "ADMINISTRATION", items: [
     { href: "/hospitals", label: "Hospital Management", icon: Building2 },
@@ -77,7 +81,7 @@ export default function AppShell({ children }: Readonly<{ children: React.ReactN
 
   useEffect(() => {
     if (!authChecked) return;
-    if (!identity && !isAuthPage && pathname !== "/") router.replace("/");
+    if (!identity && !isAuthPage && pathname !== "/") router.replace("/login");
     if (identity && isAuthPage) router.replace(landingPathForRole(identity.role));
     if (identity) {
       const restricted = restrictedDestination(identity.role, pathname);

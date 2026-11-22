@@ -100,7 +100,6 @@ def enforce_role_by_method(request: Request, user: User = Depends(current_user))
     allowed = (
         path.endswith("/generation-runs/preview")
         or ("/generation-runs" in path and request.method == "POST" and not path.endswith("/validations"))
-        or path.startswith("/api/v1/assistant/")
         or path.endswith("/analytics/runs/compare")
         or (path.endswith("/validations") and request.method == "POST")
         or (path.startswith("/api/v1/generation-runs/") and path.endswith("/dataset") and request.method == "DELETE")

@@ -7,7 +7,7 @@ test("role landing routes use the backend role", () => {
   assert.equal(landingPathForRole("user"), "/");
 });
 
-test("users are redirected away from administration and hospital editing", () => {
+test("users are redirected away from retired features and hospital editing", () => {
   assert.equal(restrictedDestination("user", "/admin"), "/");
   assert.equal(restrictedDestination("user", "/admin/datasets"), "/");
   assert.equal(restrictedDestination("user", "/users"), "/");

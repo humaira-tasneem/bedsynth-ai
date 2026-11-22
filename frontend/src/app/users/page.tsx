@@ -136,7 +136,7 @@ export default function UsersPage() {
     {success && <div className="users-alert users-alert-success" role="status">{success}<button type="button" aria-label="Dismiss message" onClick={() => setSuccess("")}><X size={16} /></button></div>}
 
     <section className="users-metric-grid" aria-label="Account statistics">
-      {primaryMetrics.map(({ label, value, icon: Icon, tone }) => <article className={`users-metric users-metric-${tone}`} key={label}><span className="users-metric-icon"><Icon size={19} /></span><span className="users-metric-label">{label}</span><strong>{loading ? "—" : value.toLocaleString()}</strong><small>{label === "Registered accounts" ? "Guest sessions excluded" : label === "Active accounts" ? `${stats.deactivated_accounts.toLocaleString()} deactivated` : "From account creation dates"}</small></article>)}
+      {primaryMetrics.map(({ label, value, icon: Icon, tone }) => <article className={`users-metric users-metric-${tone}`} key={label}><span className="users-metric-icon"><Icon size={19} /></span><span className="users-metric-label">{label}</span><strong>{loading ? "—" : value.toLocaleString()}</strong><small>{label === "Registered accounts" ? "Registered accounts only" : label === "Active accounts" ? `${stats.deactivated_accounts.toLocaleString()} deactivated` : "From account creation dates"}</small></article>)}
     </section>
     <section className="users-secondary-metrics" aria-label="Account breakdown">
       <div><Shield size={17} /><span>Administrators</span><strong>{loading ? "—" : stats.administrators.toLocaleString()}</strong></div>

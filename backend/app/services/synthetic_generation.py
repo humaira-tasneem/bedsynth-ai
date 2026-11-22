@@ -810,7 +810,6 @@ def generate_dataset(
     payload: GenerationCreate,
     *,
     owner_user_id: int | None = None,
-    guest_session_id: int | None = None,
 ) -> GenerationRun:
     key = str(payload.idempotency_key)
     config = GenerationConfig.model_validate(payload.model_dump(exclude={"idempotency_key", "preview_token"}))
@@ -825,7 +824,7 @@ def generate_dataset(
         ))
         if existing is not None:
             if (existing.hospital_id != hospital.id or existing.config.get("request") != requested
-                    or existing.owner_user_id != owner_user_id or existing.guest_session_id != guest_session_id):
+                    or existing.owner_user_id != owner_user_id or existing.guest_session_id is not None):
                 db.rollback()
                 raise HTTPException(status_code=409, detail="This idempotency key was already used with a different configuration.")
             db.rollback()
@@ -885,7 +884,6 @@ def generate_dataset(
             workspace_id=hospital.workspace_id,
             hospital_id=hospital.id,
             owner_user_id=owner_user_id,
-            guest_session_id=guest_session_id,
             idempotency_key=key,
             config=effective_config,
             seed=config.seed,
@@ -900,7 +898,7 @@ def generate_dataset(
         existing = db.scalar(select(GenerationRun).where(GenerationRun.workspace_id == hospital.workspace_id, GenerationRun.idempotency_key == key))
         if (existing is not None and existing.hospital_id == hospital_id
                 and existing.config.get("request") == requested and existing.owner_user_id == owner_user_id
-                and existing.guest_session_id == guest_session_id):
+                and existing.guest_session_id is None):
             return existing
         raise HTTPException(status_code=409, detail="A generation with this idempotency key already exists.") from exc
 

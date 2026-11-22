@@ -15,35 +15,32 @@ Project objectives:
 - Validate generated relationships and operational rules before and after generation.
 - Explore run-level analytics and compare compatible runs.
 - Export persisted records in CSV with a versioned JSON manifest.
-- Provide an optional AI assistant for drafting generation configurations; the assistant never creates records.
 - Protect workspace access and dataset ownership with authenticated roles.
 
 ## Features
 
-- Administrator-managed workspaces, shared hospitals, departments, beds, user accounts, and workspace access.
+- Administrator-managed hospitals, departments, and beds with explicit hospital publishing.
 - Role-specific administrator and research-user dashboards and navigation.
 - Scenario presets: Normal Operations, High Patient Inflow, Seasonal Disease Surge, Emergency Surge, and Low Occupancy.
 - Configurable patient age and gender shares, admission arrival patterns and types, department demand weights, length-of-stay profiles, waiting behavior, and bed turnaround settings.
 - Seeded generation with preview validation, explicit confirmation, and idempotency.
 - User-owned dataset history, details, previews, CSV downloads, validation reports, soft deletion, and same-hospital run comparison.
 - Hospital-scoped occupancy, patient-flow, department utilization, and deterministic rule-based insights.
-- Optional Gemini-primary / Groq-secondary configuration assistant with explicit-value local parsing fallback. The assistant does not accept patient information or trigger generation.
 
 ## Roles
 
 | Role | Capabilities |
 |---|---|
-| Administrator | Manage users and workspace sharing; configure hospitals, departments, and beds; review platform-wide generation runs and summary activity; analyze accessible runs. |
-| User | View shared hospitals in read-only mode; generate datasets in authorized shared workspaces; access, validate, compare, export, and soft-delete only datasets they own. |
+| Administrator | Configure hospitals, departments, and beds; publish or unpublish hospitals; generate and manage their own datasets. |
+| User | View active published hospitals in read-only mode; generate datasets; access, validate, compare, export, and soft-delete only datasets they own. |
 
-New registrations receive `user` role. Administrator role changes and workspace sharing are enforced by the API. Historical runs without an owner remain available to administrators and are not assigned to a user.
+New registrations receive `user` role. Administrator hospital publishing and dataset ownership are enforced by the API. Historical runs without an owner remain preserved and are not assigned to a user.
 
 ## Technology
 
 - Frontend: Next.js App Router, React, TypeScript, Tailwind CSS, Recharts, Lucide, Framer Motion.
 - Backend: Python, FastAPI, Pydantic, SQLAlchemy, SQLite.
 - Generation and analysis: Python standard library and the existing deterministic generation/validation/analytics services.
-- Optional assistant providers: Google Gemini and Groq; credentials remain backend-only.
 - Tests: Pytest and Node's built-in test runner. The repository does not currently include Vitest or Playwright.
 
 ## Architecture
@@ -52,9 +49,8 @@ New registrations receive `user` role. Administrator role changes and workspace 
 flowchart LR
   Browser[Next.js UI] -->|HTTP API + secure session cookie| API[FastAPI]
   API --> Auth[Authentication and role checks]
-  API --> Services[Generation, validation, analytics, exports, assistant]
+  API --> Services[Generation, validation, analytics, exports]
   Services --> DB[(SQLite / SQLAlchemy)]
-  Assistant[Gemini → Groq → explicit local parser] --> Services
   Services -->|preview, then separately confirmed run| DB
 ```
 
@@ -118,8 +114,6 @@ Backend values are documented in [backend/.env.example](backend/.env.example). C
 | `FRONTEND_ORIGIN` / `FRONTEND_ORIGINS` | Exact allowed browser origin(s); use comma-separated origins for multiple deployments. |
 | `APP_ENV` | Set `production` for production cookie defaults and HTTPS HSTS behavior. |
 | `SESSION_COOKIE_SAMESITE` / `SESSION_COOKIE_SECURE` | Cookie policy; hosted cross-site frontend/backend requires `none` and `true` over HTTPS. |
-| `GEMINI_API_KEY`, `GROQ_API_KEY` | Optional backend-only assistant keys. Never add them to frontend variables. |
-| `GEMINI_MODEL`, `GROQ_MODEL` | Optional provider model identifiers. |
 
 Frontend configuration is in [frontend/.env.example](frontend/.env.example). Never place credentials or secrets in a `NEXT_PUBLIC_*` variable. Example files contain placeholders only.
 
@@ -151,7 +145,7 @@ Open `http://localhost:3000`. API health is at `http://127.0.0.1:8000/health`; i
 
 ## Workspace and hospital workflow
 
-Administrators create/configure hospitals, departments, and beds in Hospital Management and explicitly share the containing workspace. Users can view active hospitals in shared workspaces but cannot edit hospital configuration. Runs retain their hospital/workspace ownership; cross-hospital comparisons are rejected.
+Administrators create/configure hospitals, departments, and beds in Hospital Management. They publish a hospital with **Available to users**; only active, published hospitals appear in normal-user selection, and normal users cannot edit hospital configuration. Runs retain their hospital/workspace ownership; cross-hospital comparisons are rejected.
 
 ## Dataset generation workflow
 
@@ -162,13 +156,12 @@ Administrators create/configure hospitals, departments, and beds in Hospital Man
 5. Confirm separately. The server checks the preview token against the configuration and applies the idempotency key before persisting records.
 6. Open the completed run in My Datasets or the administrator's All Datasets view.
 
-The AI assistant only proposes configuration values. Its provider response is validated, and an approved configuration must still go through Generator preview and explicit confirmation.
 
 ## Exports and analytics
 
 Run details expose available CSVs for patients, admissions, discharges, bed assignments, transfers, occupancy snapshots, waiting queue entries, bed turnaround events, and the generation-scoped bed inventory. A versioned JSON manifest describes schema/generator versions, configuration metadata, counts, UTC timestamps, relationships, and unavailable historical metadata. CSVs are scoped to a run; authorized user access is ownership-checked and administrators can access platform runs.
 
-User analytics include only the user's authorized runs. Comparisons require completed runs from the same hospital with compatible department scope. Administrator dashboard metrics are platform-wide; the Platform Analytics page charts and compares one selected hospital at a time and does not pool hospitals.
+User analytics include only the user's authorized runs. Comparisons require completed runs from the same hospital with compatible department scope. Account and hospital summary counts are available to administrators; run-specific analytics and dataset access remain owner-scoped.
 
 ## Tests and production build
 
@@ -181,8 +174,8 @@ From `backend`:
 From `frontend`:
 
 ```powershell
-npm run test:assistant-status
 npm run test:role-routing
+node --test src/app/landing-page.test.mjs src/app/settings/settings-page.test.mjs
 npm run build
 npm run start
 ```
@@ -197,7 +190,8 @@ Backend API tests use isolated temporary databases. Do not point tests at the pr
 - Unsafe browser requests are checked against configured origins. Credentialed CORS uses explicit origins; wildcard CORS with credentials is not used.
 - API responses are marked no-store and security headers are applied. Production cookies require secure settings; deploy behind HTTPS and configure the exact frontend origin.
 - Admin and ownership checks are enforced on backend endpoints, including dataset detail, analytics, comparisons, validation, deletion, and exports.
-- Synthetic patient identifiers are generated; do not input real patient data. The assistant's identifier filter is a lightweight guard, not a general PHI detector.
+- Synthetic patient identifiers are generated; do not input real patient data.
+- Guest access and the AI Assistant are retired. Legacy guest session and generation records remain in the database and are excluded from normal user dataset access.
 - Keep `.env`, SQLite databases, generated local data, and provider credentials out of Git. Review deployment secrets and backups independently.
 
 ## Limitations and future improvements

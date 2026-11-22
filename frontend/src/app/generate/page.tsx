@@ -23,7 +23,6 @@ type WaitingQueueConfig = { priority_policy: "emergency_first" | "planned_first"
 type BedTurnaroundProfile = { distribution: "fixed" | "triangular"; minimum_hours: number; mode_hours: number; maximum_hours: number };
 type DepartmentBedTurnaroundProfile = BedTurnaroundProfile & { department_id: number };
 type FormConfig = { start_date: string; end_date: string; target_admissions: number; target_occupancy_pct: number; seed: number; scenario: ScenarioId; patient_profile: PatientProfile; arrival_profile: ArrivalProfile; department_demand_weights: DepartmentDemandWeight[]; length_of_stay_profile: LengthOfStayProfile; department_length_of_stay_profiles: DepartmentLengthOfStayProfile[]; waiting_queue: WaitingQueueConfig; bed_turnaround_profile: BedTurnaroundProfile; department_bed_turnaround_profiles: DepartmentBedTurnaroundProfile[] };
-type AssistantHandoff = { workspace_id: number; hospital_id: number; start_date: string; end_date: string; target_admissions: number; target_occupancy_pct: number; seed: number; department_ids: number[] | null };
 type Preview = {
   hospital_id: number; hospital_name: string; workspace_id: number; start_date: string; end_date: string;
   target_admissions: number; projected_admissions: number; target_occupancy_pct: number; scenario: ScenarioId; patient_profile: PatientProfile; arrival_profile: ArrivalProfile; length_of_stay_profile: LengthOfStayProfile; department_length_of_stay_profiles: DepartmentLengthOfStayProfile[]; projected_discharges: number; projected_ongoing_admissions: number; projected_assigned_admissions: number; projected_waiting_patients: number; projected_max_wait_exceeded: number; projected_unresolved_requests: number; projected_average_wait_minutes: number; projected_maximum_wait_minutes: number; projected_turnaround_events: number; projected_beds_cleaning_at_window_end: number; waiting_queue: WaitingQueueConfig; bed_turnaround_profile: BedTurnaroundProfile; department_bed_turnaround_profiles: DepartmentBedTurnaroundProfile[]; effective_admission_mix: { planned: number; emergency: number }; seed: number;
@@ -165,27 +164,14 @@ export default function SyntheticDataGeneratorPage() {
     && profile.minimum_days > 0 && profile.minimum_days <= profile.mode_days && profile.mode_days <= profile.maximum_days && profile.maximum_days <= 366
     && (profile.distribution !== "fixed" || profile.minimum_days === profile.mode_days && profile.mode_days === profile.maximum_days));
 
-  async function loadHospitals(id: number, assistantHandoff?: AssistantHandoff) {
+  async function loadHospitals(id: number) {
     setLoadingHospitals(true);
     setHospitals([]); setHospitalId(null); setSelectedDepartmentIds([]); setPreview(null); setHistory([]);
     setForm((current) => ({ ...current, department_length_of_stay_profiles: [] }));
     try {
       const entries = await api<Hospital[]>(`/api/v1/workspaces/${id}/hospitals`);
       setHospitals(entries);
-      const handoffHospital = assistantHandoff && assistantHandoff.workspace_id === id
-        ? entries.find((hospital) => hospital.id === assistantHandoff.hospital_id)
-        : undefined;
-      setHospitalId(handoffHospital?.id ?? entries[0]?.id ?? null);
-      if (assistantHandoff) {
-        if (handoffHospital) {
-          setForm({ start_date: assistantHandoff.start_date, end_date: assistantHandoff.end_date, target_admissions: assistantHandoff.target_admissions, target_occupancy_pct: assistantHandoff.target_occupancy_pct, seed: assistantHandoff.seed, scenario: "normal_operations", patient_profile: copyDefaultPatientProfile(), arrival_profile: { ...DEFAULT_ARRIVAL_PROFILE }, department_demand_weights: [], length_of_stay_profile: copyDefaultLosProfile(), department_length_of_stay_profiles: [], waiting_queue: { ...DEFAULT_WAITING_QUEUE }, bed_turnaround_profile: { ...DEFAULT_TURNAROUND }, department_bed_turnaround_profiles: [] });
-          setSelectedDepartmentIds(assistantHandoff.department_ids ?? []);
-          setSuccess("Assistant configuration loaded. Review it and request a generation preview before confirmation.");
-        } else {
-          setError("The approved assistant hospital is no longer active in this workspace. Choose an active hospital and review the configuration.");
-        }
-        window.sessionStorage.removeItem("bedsynth-approved-assistant-config");
-      }
+      setHospitalId(entries[0]?.id ?? null);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not load hospitals.");
     } finally { setLoadingHospitals(false); }
@@ -206,18 +192,9 @@ export default function SyntheticDataGeneratorPage() {
         setApiOnline(health.status === "ok");
         setWorkspaces(workspaceEntries);
         if (workspaceEntries.length) {
-          let handoff: AssistantHandoff | undefined;
-          try {
-            const saved = window.sessionStorage.getItem("bedsynth-approved-assistant-config");
-            if (saved) handoff = JSON.parse(saved) as AssistantHandoff;
-          } catch {
-            window.sessionStorage.removeItem("bedsynth-approved-assistant-config");
-          }
-          const targetWorkspaceId = handoff && workspaceEntries.some((workspace) => workspace.id === handoff?.workspace_id)
-            ? handoff.workspace_id
-            : workspaceEntries[0].id;
+          const targetWorkspaceId = workspaceEntries[0].id;
           setWorkspaceId(targetWorkspaceId);
-          await loadHospitals(targetWorkspaceId, handoff);
+          await loadHospitals(targetWorkspaceId);
         }
       } catch (cause) {
         if (!mounted) return;

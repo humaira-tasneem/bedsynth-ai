@@ -63,6 +63,10 @@ def login(client: TestClient, email="admin@example.test", password="correct-hors
 
 def test_auth_required_registration_and_http_only_cookie(auth_client: TestClient) -> None:
     assert auth_client.get("/api/v1/workspaces").status_code == 401
+    assert auth_client.post("/api/v1/hospitals/1/generation-runs/preview", json={
+        "start_date": "2025-01-01", "end_date": "2025-01-02", "target_admissions": 1,
+        "target_occupancy_pct": 70, "seed": 1,
+    }).status_code == 401
     response = auth_client.post("/api/v1/auth/register", json={"email": " User@Example.test ", "password": "long-password-123"}, headers={"Origin": "http://localhost:3000"})
     assert response.status_code == 201
     assert response.json()["role"] == "user"
@@ -349,7 +353,7 @@ def test_administrator_can_access_only_owned_datasets_and_reports(auth_client: T
 
 def test_cross_origin_cookie_mutation_is_rejected(auth_client: TestClient) -> None:
     make_admin(auth_client); login(auth_client)
-    response = auth_client.post("/api/v1/assistant/chat", json={"workspace_id": 1, "message": "hi"}, headers={"Origin": "https://attacker.invalid"})
+    response = auth_client.post("/api/v1/auth/change-password", json={}, headers={"Origin": "https://attacker.invalid"})
     assert response.status_code == 403
 
 
