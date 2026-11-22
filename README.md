@@ -1,210 +1,292 @@
 # BedSynth AI
 
-BedSynth AI is a research and academic platform for generating, validating, analyzing, and exporting fictional hospital operations datasets. It helps students and researchers exercise bed occupancy and scheduling workflows without using real patient records.
+## Project Overview
 
-The project is an operations data simulator, not an electronic health record or hospital management system. Generation is hospital-scoped, reproducible with a seed, and gated by preview, validation, explicit confirmation, and idempotency protection.
+BedSynth AI is an academic software project for generating, validating, analyzing, and exporting fictional hospital operations datasets. It provides configurable hospital, department, and bed inventories and creates reproducible synthetic records for bed-occupancy and scheduling-model research and testing.
 
-## Problem and objectives
+BedSynth AI is an operations-data simulator. It is not an electronic health record (EHR), a clinical decision-support system, or a replacement for hospital administration software. It does not use real hospital patient records. Generated records are fictional and should not be interpreted as clinical or empirically calibrated hospital data.
 
-Bed-occupancy and scheduling algorithms need event histories and capacity constraints to test their behavior. Real hospital operations data can be sensitive or difficult to share. BedSynth AI supplies reproducible synthetic admissions, stays, bed assignments, transfers, queues, turnaround intervals, and occupancy snapshots using fictional patient profiles.
+## Problem Statement
 
-Project objectives:
+Researchers and students need operational event data to test bed allocation, occupancy, and scheduling algorithms. Real hospital data can contain sensitive information, be subject to sharing restrictions, or be unavailable to people developing and evaluating models. These barriers can make it difficult to share a consistent dataset for repeatable experiments.
 
-- Configure shared hospitals, departments, and beds.
-- Generate deterministic, scenario-based operational datasets within configured capacity.
-- Validate generated relationships and operational rules before and after generation.
-- Explore run-level analytics and compare compatible runs.
-- Export persisted records in CSV with a versioned JSON manifest.
-- Protect workspace access and dataset ownership with authenticated roles.
+BedSynth AI provides configurable, fictional datasets with linked hospital operations records. A fixed random seed and saved generation configuration allow a run to be reproduced without relying on real patient data. Synthetic data is useful for software development and controlled model testing; it does not by itself prove that a model is accurate, safe, or effective in a real hospital.
 
-## Features
+## Project Objectives
 
-- Administrator-managed hospitals, departments, and beds with explicit hospital publishing.
-- Role-specific administrator and research-user dashboards and navigation.
-- Scenario presets: Normal Operations, High Patient Inflow, Seasonal Disease Surge, Emergency Surge, and Low Occupancy.
-- Configurable patient age and gender shares, admission arrival patterns and types, department demand weights, length-of-stay profiles, waiting behavior, and bed turnaround settings.
-- Seeded generation with preview validation, explicit confirmation, and idempotency.
-- User-owned dataset history, details, previews, CSV downloads, validation reports, soft deletion, and same-hospital run comparison.
-- Hospital-scoped occupancy, patient-flow, department utilization, and deterministic rule-based insights.
+- Configure fictional hospital inventories and publish selected hospitals for registered users.
+- Generate reproducible admissions and bed-operations histories within a selected hospital's configured bed scope.
+- Validate record relationships, timestamps, assignment intervals, capacity, and occupancy consistency.
+- Explore run-level occupancy, patient-flow, department, and comparison analytics.
+- Download CSV exports and a versioned JSON manifest for external analysis.
+- Enforce administrator permissions and per-user dataset ownership in the backend.
 
-## Roles
+## Key Features
 
-| Role | Capabilities |
-|---|---|
-| Administrator | Configure hospitals, departments, and beds; publish or unpublish hospitals; generate and manage their own datasets. |
-| User | View active published hospitals in read-only mode; generate datasets; access, validate, compare, export, and soft-delete only datasets they own. |
+- Administrator management of hospitals, departments, beds, archive state, and hospital publication.
+- Read-only hospital selection for normal users, limited to active hospitals published by an administrator.
+- Five generation scenarios: Normal Operations, High Patient Inflow, Seasonal Disease Surge, Emergency Surge, and Low Occupancy.
+- Configurable patient age and gender distributions, minimum and maximum ages, admission arrival patterns and planned/emergency proportions, department demand weights, and global or department-specific length-of-stay profiles.
+- Configurable waiting-queue priority and maximum wait, plus global or department-specific bed-turnaround profiles.
+- Deterministic generation from a random seed, with hospital and department scope checks.
+- Preview, validation, explicit confirmation, preview-token checking, and idempotency protection before records are persisted.
+- User-owned dataset history, details, read-only record previews, CSV downloads, saved validation reports, and soft deletion.
+- Hospital analytics for persisted runs, including occupancy, patient flow, department utilization, and same-hospital run comparisons.
+- Responsive role-based application navigation and account authentication.
 
-New registrations receive `user` role. Administrator hospital publishing and dataset ownership are enforced by the API. Historical runs without an owner remain preserved and are not assigned to a user.
+The AI Assistant and guest access have been retired from the active application. Legacy guest tables and historical guest-linked data remain in the database for preservation, but are not exposed through registered-user dataset access.
 
-## Technology
+## User Roles and Permissions
 
-- Frontend: Next.js App Router, React, TypeScript, Tailwind CSS, Recharts, Lucide, Framer Motion.
-- Backend: Python, FastAPI, Pydantic, SQLAlchemy, SQLite.
-- Generation and analysis: Python standard library and the existing deterministic generation/validation/analytics services.
-- Tests: Pytest and Node's built-in test runner. The repository does not currently include Vitest or Playwright.
+| Role | Main capabilities |
+| --- | --- |
+| Administrator | Create and manage hospitals, departments, and beds; archive or restore hospital configurations; publish or unpublish hospitals; generate datasets; access their own datasets and analytics. |
+| Normal user | Register and sign in; view and select active published hospitals; preview and generate datasets; view, validate, analyze, export, compare, and soft-delete datasets owned by their account. |
 
-## Architecture
+New registrations receive the normal `user` role. Users cannot modify hospital configuration. Dataset detail, export, analytics, validation, and deletion APIs enforce ownership for both roles; administrator access does not bypass dataset ownership. Historical runs with no owner remain unassigned and are not returned by registered-user dataset routes.
+
+## System Architecture
+
+The application uses a Next.js frontend and a FastAPI backend. The frontend calls REST endpoints over HTTP and sends the authentication session cookie. FastAPI applies authentication, role, hospital-visibility, and dataset-ownership checks before invoking SQLAlchemy-backed services. The services use SQLite by default for configuration and generated records.
 
 ```mermaid
 flowchart LR
-  Browser[Next.js UI] -->|HTTP API + secure session cookie| API[FastAPI]
-  API --> Auth[Authentication and role checks]
-  API --> Services[Generation, validation, analytics, exports]
-  Services --> DB[(SQLite / SQLAlchemy)]
-  Services -->|preview, then separately confirmed run| DB
+    Browser[Next.js App Router UI] -->|REST API and HTTP-only session cookie| API[FastAPI]
+    API --> Auth[Authentication and authorization]
+    API --> Hospital[Hospital Studio routes]
+    API --> Operations[Generation, validation, analytics, dataset services]
+    Hospital --> ORM[SQLAlchemy models]
+    Operations --> ORM
+    ORM --> DB[(SQLite database)]
+    Operations -->|Preview first; persist only after confirmation| DB
 ```
 
-All operational records are linked to a generation run, workspace, and hospital. Analytics use persisted snapshots/events; missing historical metadata is left unavailable rather than inferred. See [the backend guide](backend/README.md) and [hospital domain specification](docs/architecture/HOSPITAL_DOMAIN_SPECIFICATION.md) for detailed semantics and constraints.
+Generation uses the existing Python service and seeded random generation. Preview calculates proposed scope and projected events without saving a completed dataset. Confirmation verifies the preview and request, then writes the run and its operational rows transactionally. Validation reports are stored separately and do not repair or change generated source records.
 
-## Repository structure
+## Technology Stack
+
+| Area | Technologies used |
+| --- | --- |
+| Frontend | Next.js App Router, React, TypeScript, Tailwind CSS, Recharts, Lucide, Framer Motion |
+| Backend API | Python, FastAPI, Pydantic, SQLAlchemy |
+| Database | SQLite by default; SQLAlchemy database URL configuration |
+| Generation and analysis | Python standard library, SQLAlchemy-backed generation, validation, analytics, and export services |
+| Backend verification | Pytest, HTTPX test client support |
+| Frontend verification | Node.js built-in test runner, TypeScript compiler, Next.js production build |
+
+The current generator does not use Gemini, Groq, SDV, Pandas, or NumPy. No AI provider is required to generate datasets.
+
+## Hospital Data Model
+
+The main configuration hierarchy is:
 
 ```text
-backend/
-  app/                 FastAPI routes, auth, SQLAlchemy models, domain services
-  tests/               Backend tests using temporary SQLite databases
-  requirements.txt     Runtime dependencies
-  requirements-dev.txt Test dependencies
-frontend/
-  src/app/             App Router pages, dashboards, layouts, and styles
-  src/components/      Shared application shell and reusable UI
-  src/lib/             Small frontend helpers and Node tests
-docs/                  Product, architecture, domain, and design documentation
+Workspace
+└── Hospital
+    └── Department
+        └── Bed
 ```
 
-## Prerequisites
+- **Workspace** groups hospital configuration and generation runs.
+- **Hospital** belongs to one workspace and has a hospital code, archive state, and an `Available to users` publication flag. An optional network association is supported by the schema.
+- **Department** belongs to one hospital and can have a configured bed capacity and archive state.
+- **Bed** belongs to one hospital and one department. Its category and status are stored; supported statuses include planned, operational, out of service, and retired.
 
-- Python 3.11 or later supported by the declared dependencies (the maintained Windows environment uses Python 3.13.5).
-- Node.js 18.18 or later and npm compatible with Next.js 15.
+Every generation run is scoped to one hospital, its workspace, and the selected departments and beds. Operational records include hospital, workspace, and run identifiers to support scoped access and joins.
+
+## Synthetic Data Generation Workflow
+
+1. An authenticated user selects an authorized hospital and departments. Normal users see only active, published hospitals; administrators can configure hospitals and publish them from Hospital Management.
+2. The user chooses an inclusive date range, target admission count, target occupancy, scenario, and random seed. Optional settings include patient demographic profiles, planned/emergency mix and arrival patterns, department demand weights, length of stay, waiting behavior, and bed turnaround.
+3. The user requests a preview. The backend validates the requested scope and configuration, uses current operational beds, and returns projected generation and validation information without creating the completed dataset.
+4. The user reviews the preview and explicitly confirms generation. The backend checks the preview token against the configuration and current hospital inventory, and applies the idempotency key before storing the run.
+5. The user opens the completed run in My Datasets. Generated records can be previewed, validated, analyzed, or exported; operational records are not editable through dataset pages.
+
+The generated operational entities are:
+
+- **Synthetic patients:** fictional identifiers and configured age and gender values; no names or contact details are generated.
+- **Admissions:** linked to patients, hospital departments, and initial beds. Arrival/request time, planned or emergency type, scheduled time when applicable, and bed-assignment time are distinct fields where available.
+- **Discharges:** discharge events linked to admissions. Runs may contain ongoing admissions at the end of the observation window; a missing discharge is not inferred.
+- **Bed assignments:** time intervals linking admissions to beds and departments.
+- **Transfers:** events linking source and destination departments and beds.
+- **Occupancy snapshots:** daily per-department snapshots generated at 12:00 UTC from bed assignment intervals.
+- **Waiting-queue entries:** synthetic request outcomes, including waiting, assigned, or maximum-wait-exceeded states.
+- **Bed-turnaround records:** configured post-assignment bed turnaround intervals linked to the vacated assignment.
+
+Scenario and generation settings are persisted as run metadata. Identical supported configurations and seeds are intended to reproduce deterministic output. Generation rules are simulator assumptions and are not presented as measurements of actual hospital practice.
+
+## Data Validation and Analytics
+
+The validation service evaluates completed persisted runs and stores a separate report. Implemented checks are grouped into completeness, uniqueness, referential integrity, temporal validity, bed-assignment consistency, capacity consistency, and occupancy accuracy. Checks include run counts, relationships among patients/admissions/beds/assignments/transfers, event ordering, waiting and turnaround intervals, assignment overlaps, capacity bounds, and occupancy calculations. Validation is read-only with respect to the run's generated records.
+
+Analytics are computed from persisted records for a selected run; independent runs are not blended automatically. The analytics page provides occupancy summaries and trends, admission/discharge/transfer flows, department utilization, rule-based observations, and comparisons between compatible runs from the same hospital and department scope. Missing historical metadata or snapshots are shown as unavailable or omitted according to the endpoint, rather than fabricated or silently inferred. These analytics are operational summaries, not clinical assessments, statistical utility evaluations, or privacy-risk measurements.
+
+## Dataset Exports
+
+The Dataset Details page provides run-scoped downloads for the following CSV files when available:
+
+| Export | Content |
+| --- | --- |
+| `patients.csv` | Synthetic patient identifiers and demographic fields. |
+| `admissions.csv` | Admission, patient, hospital, department, bed, type, and arrival-related fields. |
+| `discharges.csv` | Discharge events linked to admissions. |
+| `bed_assignments.csv` | Bed assignment intervals linked to admissions, beds, and departments. |
+| `bed_transfers.csv` | Transfer events and their source/destination beds and departments. |
+| `occupancy_snapshots.csv` | Department occupancy counts and rates at snapshot times. |
+| `waiting_queue.csv` | Request outcome, priority, assignment, and waiting-duration fields. |
+| `bed_turnaround.csv` | Turnaround intervals linked to assignments and beds. |
+| `bed_inventory.csv` | Bed and department inventory captured for the generation run, when that historical inventory metadata is available. |
+
+The downloadable JSON manifest documents dataset schema version **1.3.0**, generator version, run configuration and metadata when available, exported files and counts, UTC timestamp convention, relationships, and unavailable historical values. CSV exports preserve run identifiers and relevant foreign keys for external joins. Exports are authorized through the same dataset ownership checks as dataset details.
+
+## Project Folder Structure
+
+```text
+.
+├── backend/
+│   ├── app/
+│   │   ├── services/          # Generation, validation, analytics, exports, activity
+│   │   ├── auth*.py           # Authentication and account CLI
+│   │   ├── models.py          # SQLAlchemy entities and relationships
+│   │   ├── routes.py          # Hospital Studio and generation API
+│   │   ├── database.py        # Engine, schema initialization, DB session
+│   │   └── main.py            # FastAPI application
+│   ├── tests/                 # Isolated SQLite backend tests
+│   ├── requirements.txt       # Backend runtime dependencies
+│   ├── requirements-dev.txt   # Runtime plus test dependencies
+│   └── README.md              # Backend routes and operational details
+├── frontend/
+│   ├── src/app/               # Next.js pages and application styles
+│   ├── src/components/        # Shared application shell and landing page
+│   ├── src/lib/               # Frontend helpers and Node tests
+│   ├── package.json           # Frontend scripts and dependencies
+│   └── README.md              # Frontend setup notes
+├── docs/
+│   └── architecture/         # Hospital domain specification
+└── README.md
+```
+
+## Installation and Setup
+
+### Prerequisites
+
+- Windows with PowerShell.
+- Python 3.13 available through the Python Launcher (`py -3.13`).
+- Node.js 18.18 or later and npm.
 - Git.
 
-## Local setup
+### Backend setup
 
-### Backend
-
-From the repository root in PowerShell:
+Run from the repository root in PowerShell:
 
 ```powershell
-cd backend
+Set-Location .\backend
 py -3.13 -m venv .venv313
 .\.venv313\Scripts\python.exe -m pip install -r requirements-dev.txt
-Copy-Item .env.example .env
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 ```
 
-If `.env` already exists, do not overwrite it. Edit it locally only as needed. The backend loads `backend/.env` using a backend-relative path. The default database URL is `sqlite:///./bedsynth.db`; run Uvicorn from `backend` so it resolves to `backend/bedsynth.db`.
+The backend loads `backend/.env` using a path relative to its Python package. The example file contains local configuration placeholders and does not need provider keys. The default database URL is `sqlite:///./bedsynth.db`; run backend commands from `backend` so the database file is `backend/bedsynth.db`. Do not overwrite an existing `.env` file.
 
-### Frontend
+### Frontend setup
 
-In another terminal from the repository root:
+Use a separate PowerShell terminal from the repository root:
 
 ```powershell
-cd frontend
+Set-Location .\frontend
 npm install
-Copy-Item .env.example .env.local
+if (-not (Test-Path .env.local)) { Copy-Item .env.example .env.local }
 ```
 
-If `.env.local` already exists, do not overwrite it. `NEXT_PUBLIC_API_BASE_URL` is a browser-visible URL, not a secret.
+The only variable in the frontend example is `NEXT_PUBLIC_API_BASE_URL`, a browser-visible API URL. Do not put credentials or secrets in frontend environment variables. Do not overwrite an existing `.env.local` file.
 
-## Environment configuration
+## Running the Application
 
-Backend values are documented in [backend/.env.example](backend/.env.example). Common settings:
-
-| Variable | Purpose |
-|---|---|
-| `DATABASE_URL` | SQLAlchemy database URL; defaults to a local SQLite file. |
-| `FRONTEND_ORIGIN` / `FRONTEND_ORIGINS` | Exact allowed browser origin(s); use comma-separated origins for multiple deployments. |
-| `APP_ENV` | Set `production` for production cookie defaults and HTTPS HSTS behavior. |
-| `SESSION_COOKIE_SAMESITE` / `SESSION_COOKIE_SECURE` | Cookie policy; hosted cross-site frontend/backend requires `none` and `true` over HTTPS. |
-
-Frontend configuration is in [frontend/.env.example](frontend/.env.example). Never place credentials or secrets in a `NEXT_PUBLIC_*` variable. Example files contain placeholders only.
-
-## First administrator, registration, and login
-
-Create the first administrator interactively from `backend`:
+Start the backend from a PowerShell terminal in the repository root:
 
 ```powershell
-.\.venv313\Scripts\python.exe -m app.auth_cli create-admin
-```
-
-The CLI prompts for credentials and has no default password. Then run both services and visit `http://localhost:3000/login`. Standard users may register from the login page; registration cannot assign an administrator role. Admin and user dashboards are selected from the server-authenticated session.
-
-## Database initialization and demo hospital
-
-With the backend environment configured, initialize the database schema and seed the fictional sample hospital from the `backend` directory:
-
-```powershell
-cd backend
-.\.venv313\Scripts\python.exe -m app.demo_seed
-```
-
-The command is safe to rerun. It creates or completes Sunrise General Hospital (`SGH-001`) with Cardiology (25 beds), Emergency (20), General Medicine (30), Neurology (20), and Orthopedics (25), for 120 beds on a fresh installation. It preserves administrator-edited configuration and adds only missing beds up to current department capacities. It does not create administrator credentials or synthetic datasets. A newly seeded hospital remains unpublished. Sign in as an administrator, open Hospital Management, and enable **Available to users** when you want registered users to select it. Normal users register through the application, then select an active published hospital on the Generator page, preview and validate their settings, and explicitly confirm generation.
-
-## Run the application
-
-Start the API from `backend`:
-
-```powershell
+Set-Location .\backend
 .\.venv313\Scripts\python.exe -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Start the frontend from `frontend`:
+Start the frontend in a second terminal from the repository root:
 
 ```powershell
+Set-Location .\frontend
 npm run dev
 ```
 
-Open `http://localhost:3000`. API health is at `http://127.0.0.1:8000/health`; interactive API docs are at `http://127.0.0.1:8000/docs`.
+Open `http://localhost:3000`. The backend health endpoint is `http://127.0.0.1:8000/health`, and interactive API documentation is at `http://127.0.0.1:8000/docs`.
 
-## Workspace and hospital workflow
+## Demo Hospital Setup
 
-Administrators create/configure hospitals, departments, and beds in Hospital Management. They publish a hospital with **Available to users**; only active, published hospitals appear in normal-user selection, and normal users cannot edit hospital configuration. Runs retain their hospital/workspace ownership; cross-hospital comparisons are rejected.
-
-## Dataset generation workflow
-
-1. Select an authorized hospital and departments.
-2. Configure the date range, admission count, scenario, seed, age/gender profile, arrival/type mix, length of stay, waiting queue, and turnaround settings as needed.
-3. Request a preview. The server validates the current hospital bed scope, configuration, capacity, and expected event relationships.
-4. Review validation findings and the previewed configuration.
-5. Confirm separately. The server checks the preview token against the configuration and applies the idempotency key before persisting records.
-6. Open the completed run in My Datasets or the administrator's All Datasets view.
-
-
-## Exports and analytics
-
-Run details expose available CSVs for patients, admissions, discharges, bed assignments, transfers, occupancy snapshots, waiting queue entries, bed turnaround events, and the generation-scoped bed inventory. A versioned JSON manifest describes schema/generator versions, configuration metadata, counts, UTC timestamps, relationships, and unavailable historical metadata. CSVs are scoped to a run; authorized user access is ownership-checked and administrators can access platform runs.
-
-User analytics include only the user's authorized runs. Comparisons require completed runs from the same hospital with compatible department scope. Account and hospital summary counts are available to administrators; run-specific analytics and dataset access remain owner-scoped.
-
-## Tests and production build
-
-From `backend`:
+From a PowerShell terminal in the repository root, initialize the schema and seed the fictional sample hospital:
 
 ```powershell
+Set-Location .\backend
+.\.venv313\Scripts\python.exe -m app.demo_seed
+```
+
+The command is explicit and repeat-safe. On a fresh database, it creates the `BedSynth Demo Workspace`, **Sunrise General Hospital** (`SGH-001`), and these departments and capacities:
+
+| Department | Capacity |
+| --- | ---: |
+| Cardiology | 25 beds |
+| Emergency | 20 beds |
+| General Medicine | 30 beds |
+| Neurology | 20 beds |
+| Orthopedics | 25 beds |
+| **Total** | **120 beds** |
+
+The seed command does not create an administrator, user, synthetic patient, generation run, or dataset. It preserves matching existing configuration and adds only missing beds up to the departments' current configured capacities. A newly seeded hospital remains unpublished.
+
+Create the first administrator through the existing interactive CLI; it prompts for credentials and does not provide a default password:
+
+```powershell
+Set-Location .\backend
+.\.venv313\Scripts\python.exe -m app.auth_cli create-admin
+```
+
+Sign in through the application, open **Hospital Management**, and enable **Available to users** for Sunrise General Hospital when it is ready to be used. Registered normal users can then select that active published hospital in the Generator, configure their run, request and review a preview, and explicitly confirm generation.
+
+## Security and Data Privacy
+
+- Only fictional synthetic patient records are generated. Do not enter real patient information.
+- Passwords are stored as salted scrypt hashes. Session tokens are opaque, delivered through HTTP-only cookies, and stored in the database as hashes.
+- New registrations cannot grant themselves administrator privileges. Backend routes enforce administrator-only configuration changes and published-hospital visibility.
+- Dataset detail, export, analytics, validation, comparison, and soft-delete operations are restricted to the signed-in user's own runs, including for administrators.
+- Historical runs with null owners and legacy guest-linked records are retained but excluded from registered-user datasets.
+- Browser API requests use configured origins and credentialed CORS uses explicit origins. Production deployments should use HTTPS and secure cookie settings.
+- Keep `.env`, `.env.local`, SQLite databases, and local generated data out of version control. Never copy secrets into the README or frontend configuration.
+
+This project has not been presented as HIPAA-compliant or as an approved environment for protected health information. Its privacy benefit is that synthetic workflows can be tested without using real hospital records.
+
+## Testing and Verification
+
+Backend tests use isolated temporary SQLite databases. From the repository root:
+
+```powershell
+Set-Location .\backend
 .\.venv313\Scripts\python.exe -m pytest -v
 ```
 
-From `frontend`:
+The frontend does not define an `npm test` script or use Vitest/Playwright. Its checked-in tests use Node's built-in runner. Run them, then check TypeScript and create a production build from `frontend`:
 
 ```powershell
-npm run test:role-routing
-node --test src/app/landing-page.test.mjs src/app/settings/settings-page.test.mjs
+Set-Location .\frontend
+node --test src/lib/role-routing.test.mjs src/app/landing-page.test.mjs src/app/settings/settings-page.test.mjs
+npx tsc --noEmit
 npm run build
-npm run start
 ```
 
-Backend API tests use isolated temporary databases. Do not point tests at the project SQLite database. Do not delete or reset the local database to troubleshoot; back it up before any deployment schema update.
+The production build can be served locally with `npm run start` after the build completes. Do not point tests at the project database, and do not reset or delete the local database to troubleshoot test failures.
 
-## Security and privacy
+## Limitations and Future Enhancements
 
-- Passwords use salted scrypt hashes. Session tokens are random, returned only in an HTTP-only cookie, and stored server-side as SHA-256 hashes.
-- Sessions expire after 14 days, logout revokes them, and account deactivation removes that user's sessions.
-- Login failures are throttled by an in-memory per-account/IP window; registration is throttled by IP. These controls reset on process restart and are not shared across workers. Hosted multi-worker deployments should add trusted edge-level rate limiting.
-- Unsafe browser requests are checked against configured origins. Credentialed CORS uses explicit origins; wildcard CORS with credentials is not used.
-- API responses are marked no-store and security headers are applied. Production cookies require secure settings; deploy behind HTTPS and configure the exact frontend origin.
-- Admin and ownership checks are enforced on backend endpoints, including dataset detail, analytics, comparisons, validation, deletion, and exports.
-- Synthetic patient identifiers are generated; do not input real patient data.
-- Guest access and the AI Assistant are retired. Legacy guest session and generation records remain in the database and are excluded from normal user dataset access.
-- Keep `.env`, SQLite databases, generated local data, and provider credentials out of Git. Review deployment secrets and backups independently.
+BedSynth AI is an academic/MVP simulator. Generation uses explicit simulator rules and configurable distributions; those defaults are not fitted to a particular hospital and are not empirical claims. The application does not implement email verification, password reset, multi-factor authentication, distributed rate limiting, a background job queue, object storage, or automated deployment. Authentication throttling is process-local. The current application does not provide AI-assisted configuration, statistical utility or privacy-risk evaluation, clinical validation, optimization algorithms, or benchmark results.
 
-## Limitations and future improvements
+Possible future work includes validating generation rules against appropriately governed aggregate operational data, adding formal benchmarking datasets and optimization adapters, and evaluating a production database and background processing approach. Such work would require separate design, data governance, and testing; it is not part of the current implementation.
 
-The application is an academic/MVP local platform. It has no production email verification, password reset, MFA, distributed login throttling, background job queue, object storage, or deployment automation. The admin dashboard has aggregate platform counts, while analytics charts are hospital-scoped. Generated values are simulation rules and defaults, not empirically fitted hospital distributions. Analytics are not statistical utility or privacy-risk evaluations and do not establish that an optimization model is safe or effective. Multi-hospital generation, calibrated operational distributions, model benchmarking, and external optimization integrations require future design and validation.
+## Conclusion
+
+BedSynth AI provides an end-to-end academic workflow for configuring fictional hospital capacity, generating reproducible synthetic operational events, validating their consistency, reviewing run analytics, and exporting linked datasets. It offers a practical environment for developing and testing bed-occupancy and scheduling software while keeping real hospital records out of the project workflow.
