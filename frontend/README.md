@@ -81,4 +81,4 @@ Other checked-in frontend tests can be run directly with Node:
 node --test src/app/landing-page.test.mjs src/app/settings/settings-page.test.mjs
 ```
 
-Production output uses `.next-build`; development output uses `.next` so a production build does not replace chunks used by an active development server.
+Next.js uses its standard `.next` output directory for development and production builds. Vercel detects the production build from this directory.
