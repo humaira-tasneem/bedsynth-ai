@@ -47,7 +47,7 @@ npm install
 if (-not (Test-Path .env.local)) { Copy-Item .env.example .env.local }
 ```
 
-The optional `.env.local` value `NEXT_PUBLIC_API_BASE_URL` sets the browser-visible backend API origin. It defaults to `http://localhost:8000`. Do not place secrets in `NEXT_PUBLIC_*` variables. Do not overwrite an existing `.env.local` file.
+The recommended setup uses the Next.js same-origin proxy: `BACKEND_API_URL` is a server-side environment variable that points to the backend origin, and the frontend proxies `/api/*` and `/health`. In development it defaults to `http://127.0.0.1:8000`. In production it is required and the build fails if it is missing. Leave `NEXT_PUBLIC_API_BASE_URL` blank to use the proxy. This optional browser-visible variable can point directly to an API origin, but direct cross-site cookie requests require additional backend cookie configuration. Never put secrets in `NEXT_PUBLIC_*` variables. Do not overwrite an existing `.env.local` file.
 
 ## Run
 
@@ -58,7 +58,11 @@ Set-Location .\frontend
 npm run dev
 ```
 
-Open `http://localhost:3000`. The frontend needs the backend running at the configured API origin for sign-in, account registration, hospital selection, dataset generation, analytics, validation, and downloads.
+Open `http://localhost:3000`. The frontend needs the backend running at `BACKEND_API_URL` for sign-in, account registration, hospital selection, dataset generation, analytics, validation, health status, and downloads. Browser requests use the frontend origin when the proxy is enabled, preserving the existing credentialed session-cookie flow.
+
+## Production deployment
+
+Set the Vercel project root to `frontend`, configure `BACKEND_API_URL` to the Railway HTTPS API origin, and build with `npm run build`. Do not set `NEXT_PUBLIC_API_BASE_URL` when using the proxy. The Vercel and Railway setup, persistent SQLite volume, backend environment, cookie settings, and verification steps are documented in the [root README](../README.md#production-deployment).
 
 ## Available npm scripts
 

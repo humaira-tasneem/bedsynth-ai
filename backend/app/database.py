@@ -2,12 +2,36 @@
 
 import os
 from collections.abc import Generator
+from pathlib import Path, PurePosixPath
 
 from sqlalchemy import create_engine, event, inspect
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./bedsynth.db")
+def configured_database_url(database_url: str | None, app_env: str) -> str:
+    """Require explicit, absolute SQLite storage paths in production."""
+    is_production = app_env.strip().lower() == "production"
+    if is_production and not database_url:
+        raise RuntimeError("DATABASE_URL must be explicitly configured in production.")
+
+    resolved_url = database_url or "sqlite:///./bedsynth.db"
+    parsed_url = make_url(resolved_url)
+    if is_production and parsed_url.get_backend_name() == "sqlite":
+        database_path = parsed_url.database
+        posix_path = PurePosixPath(database_path) if database_path else None
+        path_is_absolute = bool(database_path and (Path(database_path).is_absolute() or posix_path.is_absolute()))
+        path_is_on_railway_volume = bool(posix_path and posix_path.is_absolute()
+                                        and posix_path != PurePosixPath("/data")
+                                        and PurePosixPath("/data") in posix_path.parents)
+        if not path_is_absolute or not path_is_on_railway_volume:
+            raise RuntimeError(
+                "Production SQLite DATABASE_URL must point to a database file beneath the Railway volume at /data."
+            )
+    return resolved_url
+
+
+DATABASE_URL = configured_database_url(os.getenv("DATABASE_URL"), os.getenv("APP_ENV", "development"))
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 engine = create_engine(DATABASE_URL, connect_args=connect_args, pool_pre_ping=True)
 

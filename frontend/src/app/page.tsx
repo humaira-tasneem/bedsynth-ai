@@ -6,7 +6,7 @@ import { motion } from "framer-motion";
 import { Activity, ArrowRight, BarChart3, Database, FlaskConical, LoaderCircle } from "lucide-react";
 import MarketingLanding from "@/components/MarketingLanding";
 
-const apiBase = (process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
+const apiBase = (process.env.NEXT_PUBLIC_API_BASE_URL || "").replace(/\/$/, "");
 type Run = { run_id: string; hospital_name: string; started_at: string; status: string; scenario_name: string | null; record_counts: { patients: number; admissions: number } };
 type Dashboard = { user_email: string; total_datasets: number; total_generated_records: number; latest_occupancy_pct: number | null; latest_occupancy_date: string | null; recent_runs: Run[] };
 

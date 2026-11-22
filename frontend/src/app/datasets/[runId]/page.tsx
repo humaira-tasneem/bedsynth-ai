@@ -5,7 +5,7 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { Activity, Download, FileJson2, FileSpreadsheet, LoaderCircle, Search, ShieldCheck, Trash2 } from "lucide-react";
 
-const apiBase = (process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
+const apiBase = (process.env.NEXT_PUBLIC_API_BASE_URL || "").replace(/\/$/, "");
 const entities = [
   { id: "patients", label: "Patients", count: "patients" },
   { id: "admissions", label: "Admissions", count: "admissions" },

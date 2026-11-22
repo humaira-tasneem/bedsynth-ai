@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Activity, ArrowLeft, CheckCircle2, CircleAlert, LoaderCircle, RefreshCw, ShieldCheck } from "lucide-react";
 
-const apiBase = (process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
+const apiBase = (process.env.NEXT_PUBLIC_API_BASE_URL || "").replace(/\/$/, "");
 type Workspace = { id: number; name: string };
 type Run = { run_id: string; hospital_id: number; status: string; started_at: string; patients_count: number; admissions_count: number };
 type Issue = { category: string; severity: string; code: string; message: string; entity_type?: string | null; entity_id?: string | number | null };

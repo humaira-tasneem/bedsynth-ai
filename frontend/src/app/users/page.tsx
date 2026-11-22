@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ChevronLeft, ChevronRight, Clock3, Database, Info, Users } from "lucide-react";
 
-const apiBase = (process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
+const apiBase = (process.env.NEXT_PUBLIC_API_BASE_URL || "").replace(/\/$/, "");
 type Account = { id: number; email: string; role: "admin" | "user"; registered_at: string; completed_dataset_count: number; latest_generation_at: string | null };
 type Counts = { patients: number; admissions: number; discharges: number; bed_assignments: number; bed_transfers: number; occupancy_snapshots: number; waiting_queue: number | null; bed_turnaround: number | null };
 type Run = { run_id: string; hospital_name: string; status: "generating" | "completed" | "failed"; started_at: string; completed_at: string | null; scenario_name: string | null; configured_start_date: string | null; configured_end_date: string | null; target_admissions: number | null; target_occupancy_pct: number | null; seed: number; departments: string[]; record_counts: Counts };

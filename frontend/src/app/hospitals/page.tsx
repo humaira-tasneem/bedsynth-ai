@@ -19,7 +19,7 @@ import {
   X,
 } from "lucide-react";
 
-const apiBase = (process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
+const apiBase = (process.env.NEXT_PUBLIC_API_BASE_URL || "").replace(/\/$/, "");
 
 type Workspace = { id: number; name: string };
 type HospitalNetwork = { id: number; workspace_id: number; name: string; is_archived: boolean };

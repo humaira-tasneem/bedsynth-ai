@@ -12,7 +12,7 @@ import {
   PanelLeftOpen, ShieldCheck, Sun, X,
 } from "lucide-react";
 
-const apiBase = (process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
+const apiBase = (process.env.NEXT_PUBLIC_API_BASE_URL || "").replace(/\/$/, "");
 const adminNavigationGroups = [
   { label: "ADMINISTRATION", items: [
     { href: "/hospitals", label: "Hospital Management", icon: Building2 },

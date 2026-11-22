@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { Activity, ArrowRight, BarChart3, Building2, Database, LoaderCircle, UserRoundCog, Users } from "lucide-react";
 
-const apiBase = (process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
+const apiBase = (process.env.NEXT_PUBLIC_API_BASE_URL || "").replace(/\/$/, "");
 type ActivityItem = { run_id: string; hospital_name: string; owner_email: string | null; started_at: string; status: string; scenario_name: string | null; record_count: number };
 type Summary = { total_registered_users: number; active_users: number; shared_hospitals: number; departments: number; beds: number; generation_runs: number; generated_records: number; recent_activity: ActivityItem[] };
 

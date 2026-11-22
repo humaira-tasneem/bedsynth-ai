@@ -198,7 +198,7 @@ npm install
 if (-not (Test-Path .env.local)) { Copy-Item .env.example .env.local }
 ```
 
-The only variable in the frontend example is `NEXT_PUBLIC_API_BASE_URL`, a browser-visible API URL. Do not put credentials or secrets in frontend environment variables. Do not overwrite an existing `.env.local` file.
+The frontend example configures `BACKEND_API_URL` for the Next.js server-side API proxy. The optional `NEXT_PUBLIC_API_BASE_URL` is a browser-visible direct API origin; leave it blank to use the same-origin proxy. Do not put credentials or secrets in frontend environment variables. Do not overwrite an existing `.env.local` file.
 
 ## Running the Application
 
@@ -217,6 +217,55 @@ npm run dev
 ```
 
 Open `http://localhost:3000`. The backend health endpoint is `http://127.0.0.1:8000/health`, and interactive API documentation is at `http://127.0.0.1:8000/docs`.
+
+## Production Deployment
+
+The deployment target is a single FastAPI service on Railway and a Next.js application on Vercel. Deploy the `backend` directory as the Railway service root and the `frontend` directory as the Vercel project root.
+
+### Railway backend
+
+Configure the Railway service with:
+
+- **Root directory:** `backend`
+- **Start command:** `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+- **Health check path:** `/health`
+- **Persistent volume mount:** `/data`
+- **Replicas:** one, because the SQLite database is a single-file database on an attached volume.
+
+Set these Railway variables (replace the example origin with the deployed frontend origin):
+
+```text
+APP_ENV=production
+DATABASE_URL=sqlite:////data/bedsynth.db
+FRONTEND_ORIGINS=https://<your-vercel-domain>
+SESSION_COOKIE_SAMESITE=lax
+SESSION_COOKIE_SECURE=true
+```
+
+`DATABASE_URL` must be explicitly set in production. Production startup rejects an unset SQLite URL and any SQLite file path outside `/data`, so the app will not silently create the default database in ephemeral service storage. Mount the volume at `/data` before starting the service. Back up the volume before schema-changing releases; startup currently applies additive SQLite compatibility updates and creates missing tables/indexes.
+
+Production also requires `FRONTEND_ORIGINS` or `FRONTEND_ORIGIN` to explicitly list exact HTTPS frontend origins. Startup rejects missing origins, wildcard origins, non-HTTPS origins, and origin values containing paths.
+
+### Vercel frontend and API proxy
+
+Set the Vercel project root directory to `frontend`. Set `BACKEND_API_URL` to the Railway HTTPS API origin, for example `https://<your-railway-domain>`, in the Vercel Production environment before building. The Next.js rewrites proxy `/api/*` and `/health` through the frontend origin. Keep `NEXT_PUBLIC_API_BASE_URL` unset or blank to use that proxy. It remains available as an optional direct-origin override, but direct cross-site requests require the cross-site cookie configuration described below.
+
+The same-origin proxy keeps the browser session cookie on the frontend site while forwarding API requests to Railway. Keep `FRONTEND_ORIGINS` set to the exact browser frontend origin: backend unsafe-request origin checks still validate the forwarded browser `Origin`. Do not use wildcard CORS with credentials. The proxy target is a server-side variable and must not use a `NEXT_PUBLIC_` prefix.
+
+For direct browser-to-Railway API requests instead of the proxy, set `NEXT_PUBLIC_API_BASE_URL` to the Railway HTTPS API origin and configure `SESSION_COOKIE_SAMESITE=none` with `SESSION_COOKIE_SECURE=true`. Cross-site cookies can still be restricted by browser privacy settings; prefer the same-origin proxy or custom same-site application/API domains.
+
+### First-time setup and production verification
+
+After Railway has mounted `/data` and the backend is configured, use a one-off Railway shell/command in the backend service with the same environment and volume to create the administrator and seed the fictional hospital configuration:
+
+```sh
+python -m app.auth_cli create-admin
+python -m app.demo_seed
+```
+
+The administrator command prompts for credentials. The seed command is explicit and repeat-safe; it does not create users or generated datasets, and hospitals remain unpublished until an administrator publishes them in Hospital Management. Do not run either command during the image build or before the persistent volume is mounted.
+
+Before inviting users, verify `https://<your-railway-domain>/health` returns a healthy API/database response; sign in through the Vercel domain; confirm the session survives navigation and refresh; publish a demo hospital; register a normal user; then test hospital selection, preview, explicit generation confirmation, dataset ownership, analytics, validation, and CSV downloads. Test a Vercel Preview deployment separately and add its exact origin to `FRONTEND_ORIGINS` only if it should be allowed to use the backend.
 
 ## Demo Hospital Setup
 

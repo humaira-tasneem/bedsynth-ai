@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { Check, KeyRound, LockKeyhole, LogOut, ShieldCheck, UserRound, X } from "lucide-react";
 
-const apiBase = (process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
+const apiBase = (process.env.NEXT_PUBLIC_API_BASE_URL || "").replace(/\/$/, "");
 type Account = { id: number; email: string; role: "admin" | "user"; is_active: boolean; created_at: string; last_login_at: string | null };
 
 async function get<T>(path: string): Promise<T> {

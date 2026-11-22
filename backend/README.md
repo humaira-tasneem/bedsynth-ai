@@ -23,6 +23,29 @@ To install the API test tools as well, use `-m pip install -r requirements-dev.t
 
 FastAPI loads `backend/.env` from an absolute path derived from the backend package, so environment loading does not depend on Uvicorn's `--env-file` path or the terminal's current directory. Run the command from `backend` so the default relative SQLite URL continues to use `backend/bedsynth.db`.
 
+### Railway production deployment
+
+Set the Railway service root directory to `backend`, attach a persistent volume mounted at `/data`, and configure this start command:
+
+```sh
+uvicorn app.main:app --host 0.0.0.0 --port $PORT
+```
+
+Railway supplies `PORT`; do not use `--reload` in production. Configure `APP_ENV=production`, `DATABASE_URL=sqlite:////data/bedsynth.db`, `FRONTEND_ORIGINS` as the exact Vercel frontend origin (comma-separated only for explicitly permitted origins), `SESSION_COOKIE_SAMESITE=lax`, and `SESSION_COOKIE_SECURE=true`. Do not set wildcard CORS origins when credentials are enabled.
+
+Production requires an explicit `DATABASE_URL`; the SQLite file must be beneath `/data`, the documented Railway volume mount. This prevents the local relative default or another unmounted file path from being used silently. It also requires `FRONTEND_ORIGINS` or `FRONTEND_ORIGIN` to contain exact HTTPS origin(s); wildcard, missing, non-HTTPS, and path-bearing origins are rejected at startup. Ensure `/data` is the attached Railway volume before the service starts. The public health check is `GET /health` and verifies both the API and database connection.
+
+For Vercel's same-origin API proxy, set the frontend's server-side `BACKEND_API_URL` to the Railway HTTPS origin. The browser's `Origin` is forwarded and must be included exactly in `FRONTEND_ORIGINS`; the session cookie can use `SameSite=Lax` because the browser communicates with the frontend origin. If bypassing the proxy with `NEXT_PUBLIC_API_BASE_URL`, use HTTPS, `SESSION_COOKIE_SAMESITE=none`, and `SESSION_COOKIE_SECURE=true`; browser cross-site cookie restrictions may still apply.
+
+After attaching the volume and setting the same production database URL used by the running service, create the first administrator and seed the demo hospitals using a Railway one-off command or shell:
+
+```sh
+python -m app.auth_cli create-admin
+python -m app.demo_seed
+```
+
+The administrator CLI prompts for credentials. The explicit seed command is repeat-safe, creates no users or datasets, and leaves hospitals unpublished. Run it only after the persistent volume is mounted, never during build or pre-deploy.
+
 Health: `http://127.0.0.1:8000/health`  
 Interactive API docs: `http://127.0.0.1:8000/docs`
 

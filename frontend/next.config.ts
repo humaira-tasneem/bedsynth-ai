@@ -16,6 +16,32 @@ const nextConfig: NextConfig = {
       ],
     }];
   },
+  async rewrites() {
+    const isProduction = process.env.NODE_ENV === "production";
+    const backendApiUrl = process.env.BACKEND_API_URL?.replace(/\/$/, "")
+      || (isProduction ? "" : "http://127.0.0.1:8000");
+
+    if (!backendApiUrl) {
+      throw new Error("BACKEND_API_URL must be set for production builds and deployments.");
+    }
+
+    let backendOrigin: URL;
+    try {
+      backendOrigin = new URL(backendApiUrl);
+    } catch {
+      throw new Error("BACKEND_API_URL must be a valid backend origin.");
+    }
+    if (!backendOrigin.hostname || backendOrigin.username || backendOrigin.password
+      || backendOrigin.pathname !== "/" || backendOrigin.search || backendOrigin.hash
+      || (isProduction && backendOrigin.protocol !== "https:")) {
+      throw new Error("BACKEND_API_URL must be an origin only; production origins must use HTTPS.");
+    }
+
+    return [
+      { source: "/api/:path*", destination: `${backendApiUrl}/api/:path*` },
+      { source: "/health", destination: `${backendApiUrl}/health` },
+    ];
+  },
 };
 nextConfig.outputFileTracingRoot = process.cwd();
 

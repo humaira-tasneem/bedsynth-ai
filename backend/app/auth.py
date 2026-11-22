@@ -7,6 +7,7 @@ import hmac
 import os
 import secrets
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlsplit
 
 from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy import select
@@ -17,10 +18,35 @@ from app.models import GenerationRun, Hospital, User, UserSession, ValidationRep
 
 SESSION_COOKIE = "bedsynth_session"
 SESSION_DAYS = 14
-FRONTEND_ORIGINS = tuple(
-    origin.strip().rstrip("/")
-    for origin in (os.getenv("FRONTEND_ORIGINS") or os.getenv("FRONTEND_ORIGIN", "http://localhost:3000")).split(",")
-    if origin.strip()
+
+
+def configured_frontend_origins(app_env: str, frontend_origins: str | None, frontend_origin: str | None) -> tuple[str, ...]:
+    """Resolve browser origins and fail closed for unsafe production CORS settings."""
+    raw_origins = frontend_origins or frontend_origin
+    is_production = app_env.strip().lower() == "production"
+    if is_production and not raw_origins:
+        raise RuntimeError("FRONTEND_ORIGINS must explicitly allow the deployed frontend in production.")
+
+    origins = tuple(origin.strip().rstrip("/") for origin in (raw_origins or "http://localhost:3000").split(",") if origin.strip())
+    if is_production:
+        for origin in origins:
+            parsed = urlsplit(origin)
+            try:
+                _ = parsed.port
+            except ValueError:
+                invalid_port = True
+            else:
+                invalid_port = False
+            if (origin == "*" or parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password
+                    or invalid_port or parsed.path or parsed.query or parsed.fragment):
+                raise RuntimeError("Production frontend origins must be exact HTTPS origins without paths or wildcards.")
+    return origins
+
+
+FRONTEND_ORIGINS = configured_frontend_origins(
+    os.getenv("APP_ENV", "development"),
+    os.getenv("FRONTEND_ORIGINS"),
+    os.getenv("FRONTEND_ORIGIN"),
 )
 
 

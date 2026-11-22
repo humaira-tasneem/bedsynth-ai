@@ -4,7 +4,7 @@ import Link from "next/link";
 import { FormEvent, useEffect, useState } from "react";
 import { ArrowUpRight, Database, LoaderCircle, Search } from "lucide-react";
 
-const apiBase = (process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
+const apiBase = (process.env.NEXT_PUBLIC_API_BASE_URL || "").replace(/\/$/, "");
 type Run = { run_id: string; hospital_name: string; started_at: string; status: string; scenario_name: string | null; owner_email: string | null; deleted_at: string | null; record_counts: { patients: number; admissions: number; discharges: number; bed_assignments: number; bed_transfers: number; occupancy_snapshots: number; waiting_queue: number | null; bed_turnaround: number | null } };
 type Result = { items: Run[]; total: number; page: number; pages: number };
 const recordCount = (run: Run) => Object.values(run.record_counts).reduce<number>((total, value) => total + (value ?? 0), 0);

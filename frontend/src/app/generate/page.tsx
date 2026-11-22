@@ -5,7 +5,7 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { Activity, ArrowUpRight, BedDouble, Check, CircleAlert, FlaskConical, LoaderCircle, RefreshCw, ShieldCheck, Siren, TrendingUp, Waves, Sun } from "lucide-react";
 
-const apiBase = (process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
+const apiBase = (process.env.NEXT_PUBLIC_API_BASE_URL || "").replace(/\/$/, "");
 
 type Workspace = { id: number; name: string };
 type Bed = { status: string };
