@@ -20,10 +20,13 @@ from app.environment import load_backend_environment
 load_backend_environment()
 
 from app.database import SessionLocal, initialize_database  # noqa: E402
-from app.models import Bed, Department, Hospital, Workspace  # noqa: E402
+from app.models import Bed, Department, GenerationRun, Hospital, HospitalNetwork, Workspace  # noqa: E402
 
 
-DEMO_WORKSPACE_NAME = "BedSynth Demo Workspace"
+DEFAULT_WORKSPACE_NAME = "My workspace"
+# Keep the old constant name for code that imported it, but future seed runs
+# now target the single default workspace.
+DEMO_WORKSPACE_NAME = DEFAULT_WORKSPACE_NAME
 DEMO_HOSPITAL_NAME = "Sunrise General Hospital"
 DEMO_HOSPITAL_CODE = "SGH-001"
 
@@ -103,11 +106,11 @@ def _find_hospital(db: Session, spec: DemoHospital) -> Hospital | None:
 def _get_or_create_workspace(db: Session) -> Workspace:
     workspace = db.scalar(
         select(Workspace)
-        .where(func.lower(Workspace.name) == DEMO_WORKSPACE_NAME.lower())
+        .where(func.lower(Workspace.name) == DEFAULT_WORKSPACE_NAME.lower())
         .order_by(Workspace.id)
     )
     if workspace is None:
-        workspace = Workspace(name=DEMO_WORKSPACE_NAME)
+        workspace = Workspace(name=DEFAULT_WORKSPACE_NAME)
         db.add(workspace)
         db.flush()
     return workspace
@@ -213,17 +216,42 @@ def _add_missing_beds(db: Session, hospital: Hospital, department: Department) -
     return created
 
 
-def _seed_hospital_configuration(db: Session, spec: DemoHospital) -> dict[str, int | bool | str]:
+def _seed_hospital_configuration(
+    db: Session, spec: DemoHospital, workspace: Workspace
+) -> dict[str, int | bool | str]:
     hospital = _find_hospital(db, spec)
     hospital_created = hospital is None
     if hospital is None:
-        workspace = _get_or_create_workspace(db)
         hospital = Hospital(workspace_id=workspace.id, name=spec.name, code=spec.code,
                             available_to_users=False)
         db.add(hospital)
         db.flush()
     elif hospital.is_archived:
         raise DemoSeedConflict(f"{spec.name} is archived; restore it before seeding.")
+    elif hospital.workspace_id != workspace.id:
+        # Runs are scoped to a workspace and operational records inherit that
+        # scope. Moving a hospital with historical runs would invalidate those
+        # relationships, so refuse atomically instead of rewriting run data.
+        conflicting_run = db.scalar(
+            select(GenerationRun.run_id).where(
+                GenerationRun.hospital_id == hospital.id,
+                GenerationRun.workspace_id != workspace.id,
+            ).limit(1)
+        )
+        if conflicting_run is not None:
+            raise DemoSeedConflict(
+                f"{spec.name} has historical generation runs in another workspace; "
+                "its workspace was not changed."
+            )
+        if hospital.network_id is not None:
+            network = db.get(HospitalNetwork, hospital.network_id)
+            if network is None or network.workspace_id != workspace.id:
+                raise DemoSeedConflict(
+                    f"{spec.name} is associated with a network outside My workspace; "
+                    "its workspace was not changed."
+                )
+        hospital.workspace_id = workspace.id
+        db.flush()
 
     created_beds = 0
     departments_created = 0
@@ -247,7 +275,8 @@ def _atomic_seed(db: Session, specs: tuple[DemoHospital, ...]) -> list[dict[str,
         # already queried get a savepoint, so a partial multi-hospital seed
         # cannot leak changes if any later configuration conflicts.
         with (db.begin_nested() if db.in_transaction() else db.begin()):
-            return [_seed_hospital_configuration(db, spec) for spec in specs]
+            workspace = _get_or_create_workspace(db)
+            return [_seed_hospital_configuration(db, spec, workspace) for spec in specs]
     except IntegrityError as exc:
         raise DemoSeedConflict(
             "A concurrent or existing identifier conflicts with the demo seed; rerun after reviewing the hospital configuration."

@@ -7,7 +7,6 @@ import {
   BedDouble,
   Building2,
   Check,
-  ChevronDown,
   CircleAlert,
   CirclePlus,
   Edit3,
@@ -130,8 +129,9 @@ function BedForm({ item, department, departments, onClose, onSave }: { item?: Be
 }
 
 export default function HospitalStudioPage() {
-  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [hasWorkspace, setHasWorkspace] = useState(false);
   const [workspaceId, setWorkspaceId] = useState<number | null>(null);
+  const [workspaceName, setWorkspaceName] = useState("My workspace");
   const [networks, setNetworks] = useState<HospitalNetwork[]>([]);
   const [hospitals, setHospitals] = useState<Hospital[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
@@ -168,10 +168,11 @@ export default function HospitalStudioPage() {
           }
         }
         if (!mounted) return;
-        setWorkspaces(currentWorkspaces);
+        setHasWorkspace(currentWorkspaces.length > 0);
         if (!currentWorkspaces.length) { setLoading(false); return; }
-        const chosen = currentWorkspaces[0];
+        const chosen = currentWorkspaces.find((workspace) => workspace.name.trim().toLowerCase() === "my workspace") ?? currentWorkspaces[0];
         setWorkspaceId(chosen.id);
+        setWorkspaceName(chosen.name);
         await loadWorkspaceData(chosen.id);
       } catch (cause) {
         if (mounted) setLoadError(cause instanceof Error ? cause.message : "Could not connect to Hospital Studio.");
@@ -191,12 +192,6 @@ export default function HospitalStudioPage() {
     try { await loadWorkspaceData(workspaceId); if (message) setSuccess(message); }
     catch (cause) { setLoadError(cause instanceof Error ? cause.message : "The update was saved, but the latest data could not be loaded."); }
     finally { setWorking(false); window.setTimeout(() => setSuccess(""), 4500); }
-  }
-
-  async function changeWorkspace(value: number) {
-    setWorkspaceId(value); setSelectedId(null); setLoading(true);
-    try { await loadWorkspaceData(value); } catch (cause) { setLoadError(cause instanceof Error ? cause.message : "Could not load this workspace."); }
-    finally { setLoading(false); }
   }
 
   async function saveHospital(data: Record<string, unknown>, item?: Hospital) {
@@ -266,11 +261,11 @@ export default function HospitalStudioPage() {
   return (
     <main className={`studio-page${isAdmin ? "" : " studio-readonly"}`} id="main-content">
       <div className="studio-topline"><a href="/" className="studio-back"><ArrowLeft size={16} /> Overview</a><span className="studio-topline-label">CONFIGURATION · HOSPITAL STUDIO</span></div>
-      <div className="studio-heading"><div><div className="page-kicker"><span className="kicker-line" /> FACILITY CONFIGURATION</div><h1>Hospital Studio</h1><p>Organize hospitals, departments, and bed inventory in your workspace.</p></div><div className="studio-workspace-select"><label htmlFor="workspace-select">WORKSPACE</label><select id="workspace-select" value={workspaceId ?? ""} onChange={(event) => void changeWorkspace(Number(event.target.value))} disabled={workspaces.length < 2}>{workspaces.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}</select><ChevronDown className="select-chevron" size={15} aria-hidden="true" /></div></div>
+      <div className="studio-heading"><div><div className="page-kicker"><span className="kicker-line" /> FACILITY CONFIGURATION</div><h1>Hospital Studio</h1><p>Organize hospitals, departments, and bed inventory in your workspace.</p></div><div className="studio-workspace-display" aria-label="Current workspace"><span>WORKSPACE</span><strong>{workspaceName}</strong></div></div>
       {success && <div className="studio-success" role="status"><Check size={17} />{success}</div>}
       {loadError && <div className="studio-load-error" role="alert"><CircleAlert size={17} /><span>{loadError}</span><button onClick={() => workspaceId && void refresh()} className="studio-retry">Retry</button></div>}
 
-      {!isAdmin && !loading && workspaces.length === 0 ? <div className="studio-empty"><ShieldCheck size={22} /><h2>No shared hospitals yet</h2><p>An administrator must share a workspace with your account before hospital data is visible.</p></div> : <div className="studio-layout">
+      {!isAdmin && !loading && !hasWorkspace ? <div className="studio-empty"><ShieldCheck size={22} /><h2>No published hospitals yet</h2><p>An administrator must publish a hospital configuration before it is available for dataset generation.</p></div> : <div className="studio-layout">
         <section className="hospital-list-panel" aria-labelledby="hospital-list-title">
           <div className="studio-panel-heading"><div><h2 id="hospital-list-title">Hospitals</h2><p>{visibleHospitals.length} {visibleHospitals.length === 1 ? "facility" : "facilities"} in this workspace</p></div>{isAdmin && <button className="studio-square-add" onClick={() => setDialog({ type: "hospital" })} aria-label="Create hospital" title="Create hospital"><Plus size={18} /></button>}</div>
           {isAdmin && <div className="hospital-list-toolbar"><label className="studio-archived-filter"><input type="checkbox" checked={showArchived} onChange={(event) => setShowArchived(event.target.checked)} /> Show archived</label><button onClick={() => setDialog({ type: "network" })} className="studio-text-action"><Network size={14} /> New network</button></div>}

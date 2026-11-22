@@ -39,7 +39,7 @@ cd backend
 .\.venv313\Scripts\python.exe -m app.demo_seed
 ```
 
-The command initializes the schema additively and creates or completes these configurations in the `BedSynth Demo Workspace` when needed:
+The command initializes the schema additively and creates or completes these configurations in `My workspace`. Existing demo hospitals are reassigned from `BedSynth Demo Workspace` only when they have no generation runs in the old workspace and no network association that would become invalid. The old workspace is retained. All four hospitals are managed together in Hospital Management:
 
 - `Sunrise General Hospital` (`SGH-001`): Cardiology 25, Emergency 20, General Medicine 30, Neurology 20, Orthopedics 25 — **120 beds**.
 - `CityCare Multispecialty Hospital` (`CCH-001`): Emergency 35, Cardiology 30, General Medicine 40, Neurology 20, Orthopedics 25, Pediatrics 25, Obstetrics & Gynecology 25 — **200 beds**.

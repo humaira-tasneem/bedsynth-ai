@@ -227,7 +227,7 @@ Set-Location .\backend
 .\.venv313\Scripts\python.exe -m app.demo_seed
 ```
 
-The command is explicit and repeat-safe. On a fresh database, it creates the `BedSynth Demo Workspace` and four fictional hospital configurations:
+The command is explicit and repeat-safe. On a fresh database, it creates or reuses `My workspace` and adds four fictional hospital configurations. On an existing database, the three hospitals previously held in `BedSynth Demo Workspace` are moved into `My workspace` only when they have no generation runs in their old workspace and no network association that would become invalid. The old workspace is retained:
 
 | Hospital | Code | Departments and bed capacities | Total |
 | --- | --- | --- | ---: |

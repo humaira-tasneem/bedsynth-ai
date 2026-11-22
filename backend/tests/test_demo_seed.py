@@ -5,6 +5,7 @@ from collections.abc import Generator
 import pytest
 from sqlalchemy import create_engine, func, inspect, select
 from sqlalchemy.orm import Session, sessionmaker
+from types import SimpleNamespace
 
 from app import database
 from app.models import Bed, Department, GenerationRun, Hospital, Workspace
@@ -16,6 +17,7 @@ from app.demo_seed import (
     seed_demo_hospital,
     seed_demo_hospitals,
 )
+from app.routes import list_hospitals
 
 
 @pytest.fixture
@@ -47,7 +49,7 @@ def test_fresh_database_initialization_and_first_seed_create_unpublished_120_bed
     assert hospital.name == DEMO_HOSPITAL_NAME
     assert hospital.code == DEMO_HOSPITAL_CODE
     assert hospital.available_to_users is False
-    assert hospital.workspace.name == "BedSynth Demo Workspace"
+    assert hospital.workspace.name == "My workspace"
 
     departments = list(
         seed_db.scalars(select(Department).where(Department.hospital_id == hospital.id))
@@ -117,7 +119,7 @@ def test_seed_fills_partial_configuration_to_current_department_capacities(seed_
 
 
 def test_seed_preserves_administrator_changes_and_historical_generation_run(seed_db: Session) -> None:
-    workspace = Workspace(name="Admin workspace")
+    workspace = Workspace(name="My workspace")
     seed_db.add(workspace)
     seed_db.flush()
     hospital = Hospital(
@@ -211,12 +213,14 @@ def test_over_capacity_partial_configuration_rolls_back_all_seed_changes(seed_db
     )
     assert counts_after == counts_before == (1, 2)
     assert seed_db.scalar(
-        select(func.count(Workspace.id)).where(Workspace.name == "BedSynth Demo Workspace")
+        select(func.count(Workspace.id)).where(Workspace.name == "My workspace")
     ) == 0
 
 
 def test_all_four_demo_hospitals_have_expected_inventory_and_start_unpublished(seed_db: Session) -> None:
     result = seed_demo_hospitals(seed_db)
+    default_workspace_id = seed_db.scalar(select(Workspace.id).where(Workspace.name == "My workspace"))
+    assert default_workspace_id is not None
 
     assert result["hospitals_created"] == 4
     expected = {
@@ -228,6 +232,7 @@ def test_all_four_demo_hospitals_have_expected_inventory_and_start_unpublished(s
     for code, (name, department_count, bed_count) in expected.items():
         hospital = seed_db.scalar(select(Hospital).where(Hospital.code == code))
         assert hospital is not None and hospital.name == name
+        assert hospital.workspace_id == default_workspace_id
         assert hospital.available_to_users is False
         departments = list(seed_db.scalars(select(Department).where(Department.hospital_id == hospital.id)))
         assert len(departments) == department_count
@@ -239,8 +244,28 @@ def test_all_four_demo_hospitals_have_expected_inventory_and_start_unpublished(s
     assert sum(item[2] for spec in DEMO_HOSPITALS for item in spec.departments) == 480
 
 
+def test_admin_lists_all_demo_hospitals_while_users_only_see_published(seed_db: Session) -> None:
+    seed_demo_hospitals(seed_db)
+    workspace = seed_db.scalar(select(Workspace).where(Workspace.name == "My workspace"))
+    sunrise = seed_db.scalar(select(Hospital).where(Hospital.code == "SGH-001"))
+    sunrise.available_to_users = True
+    seed_db.flush()
+
+    admin_hospitals = list_hospitals(
+        workspace_id=workspace.id, include_archived=True, db=seed_db,
+        user=SimpleNamespace(role="admin"),
+    )
+    user_hospitals = list_hospitals(
+        workspace_id=workspace.id, include_archived=True, db=seed_db,
+        user=SimpleNamespace(role="user"),
+    )
+
+    assert {hospital.code for hospital in admin_hospitals} == {spec.code for spec in DEMO_HOSPITALS}
+    assert [hospital.code for hospital in user_hospitals] == ["SGH-001"]
+
+
 def test_multi_hospital_seed_is_repeat_safe_and_preserves_existing_sunrise_edits_and_runs(seed_db: Session) -> None:
-    workspace = Workspace(name="Existing Sunrise workspace")
+    workspace = Workspace(name="My workspace")
     seed_db.add(workspace)
     seed_db.flush()
     sunrise = Hospital(workspace_id=workspace.id, name="Sunrise Admin Name", code="SGH-001",
@@ -310,6 +335,76 @@ def test_multi_hospital_seed_recovers_a_partial_hospital_without_duplicates(seed
     assert emergency.name == "Emergency Unit" and emergency.bed_capacity == 35
 
 
+def test_seed_moves_runless_demo_hospitals_into_existing_my_workspace_without_configuration_changes(seed_db: Session) -> None:
+    target = Workspace(name="My workspace")
+    source = Workspace(name="BedSynth Demo Workspace")
+    seed_db.add_all([target, source])
+    seed_db.flush()
+    expected_publication = {"CCH-001": True, "GVCH-001": False, "ASH-001": True}
+    before = {}
+    for spec in DEMO_HOSPITALS[1:]:
+        hospital = Hospital(workspace_id=source.id, name=spec.name, code=spec.code,
+                            available_to_users=expected_publication[spec.code])
+        seed_db.add(hospital)
+        seed_db.flush()
+        for name, code, capacity in spec.departments:
+            department = Department(hospital_id=hospital.id, name=name, code=code,
+                                    bed_capacity=capacity)
+            seed_db.add(department)
+            seed_db.flush()
+            for number in range(1, capacity + 1):
+                seed_db.add(Bed(hospital_id=hospital.id, department_id=department.id,
+                                code=f"{code.split('-')[0]}-{number:03d}",
+                                category="custom", status="out_of_service" if number == 1 else "operational"))
+        seed_db.flush()
+        before[hospital.code] = {
+            "id": hospital.id,
+            "departments": [(department.id, department.code, department.name, department.bed_capacity)
+                            for department in seed_db.scalars(select(Department).where(Department.hospital_id == hospital.id))],
+            "beds": [(bed.id, bed.code, bed.category, bed.status)
+                     for bed in seed_db.scalars(select(Bed).where(Bed.hospital_id == hospital.id))],
+        }
+    seed_db.commit()
+
+    result = seed_demo_hospitals(seed_db)
+
+    for code, original in before.items():
+        hospital = seed_db.scalar(select(Hospital).where(Hospital.code == code))
+        assert hospital.id == original["id"] and hospital.workspace_id == target.id
+        assert hospital.available_to_users is expected_publication[code]
+        assert [(department.id, department.code, department.name, department.bed_capacity)
+                for department in seed_db.scalars(select(Department).where(Department.hospital_id == hospital.id))] == original["departments"]
+        assert [(bed.id, bed.code, bed.category, bed.status)
+                for bed in seed_db.scalars(select(Bed).where(Bed.hospital_id == hospital.id))] == original["beds"]
+    assert result["hospitals_created"] == 1  # Only Sunrise was absent.
+    assert seed_db.get(Workspace, source.id) is not None
+    assert seed_db.scalar(select(func.count(Hospital.id)).where(Hospital.workspace_id == target.id)) == 4
+
+
+def test_seed_refuses_workspace_move_when_it_would_reassign_historical_run_scope(seed_db: Session) -> None:
+    target = Workspace(name="My workspace")
+    source = Workspace(name="BedSynth Demo Workspace")
+    seed_db.add_all([target, source])
+    seed_db.flush()
+    hospital = Hospital(workspace_id=source.id, name="CityCare Multispecialty Hospital", code="CCH-001")
+    seed_db.add(hospital)
+    seed_db.flush()
+    run = GenerationRun(run_id="foreign-workspace-run", workspace_id=source.id,
+                        hospital_id=hospital.id, owner_user_id=None,
+                        idempotency_key="foreign-workspace-key", config={}, seed=5,
+                        status="completed")
+    seed_db.add(run)
+    seed_db.commit()
+
+    with pytest.raises(ValueError, match="historical generation runs in another workspace"):
+        seed_demo_hospitals(seed_db)
+
+    seed_db.refresh(hospital)
+    assert hospital.workspace_id == source.id
+    assert seed_db.get(GenerationRun, run.run_id) is not None
+    assert seed_db.scalar(select(func.count(Hospital.id))) == 1
+
+
 def test_multi_hospital_conflict_rolls_back_earlier_hospital_creations(seed_db: Session) -> None:
     workspace = Workspace(name="Existing Apex workspace")
     seed_db.add(workspace)
@@ -332,5 +427,5 @@ def test_multi_hospital_conflict_rolls_back_earlier_hospital_creations(seed_db: 
     assert seed_db.scalar(select(func.count(Department.id)).where(Department.hospital_id == apex.id)) == 1
     assert seed_db.scalar(select(func.count(Bed.id)).where(Bed.hospital_id == apex.id)) == 2
     assert seed_db.scalar(select(func.count(Workspace.id)).where(
-        Workspace.name == "BedSynth Demo Workspace",
+        Workspace.name == "My workspace",
     )) == 0
