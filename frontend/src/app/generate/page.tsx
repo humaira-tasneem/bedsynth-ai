@@ -120,7 +120,6 @@ export default function SyntheticDataGeneratorPage() {
   const [historyError, setHistoryError] = useState("");
   const [success, setSuccess] = useState("");
   const [completedRunId, setCompletedRunId] = useState<string | null>(null);
-  const [apiOnline, setApiOnline] = useState<boolean | null>(null);
   const confirmRef = useRef<HTMLDialogElement>(null);
 
   useEffect(() => {
@@ -181,15 +180,8 @@ export default function SyntheticDataGeneratorPage() {
     let mounted = true;
     async function initialize() {
       try {
-        const [health, workspaceEntries] = await Promise.all([
-          fetch(`${apiBase}/health`, { cache: "no-store", credentials: "include" }).then((response) => {
-            if (!response.ok) throw new Error("Backend health check failed.");
-            return response.json() as Promise<{ status: string }>;
-          }),
-          api<Workspace[]>("/api/v1/workspaces"),
-        ]);
+        const workspaceEntries = await api<Workspace[]>("/api/v1/workspaces");
         if (!mounted) return;
-        setApiOnline(health.status === "ok");
         setWorkspaces(workspaceEntries);
         if (workspaceEntries.length) {
           const targetWorkspaceId = workspaceEntries[0].id;
@@ -198,7 +190,6 @@ export default function SyntheticDataGeneratorPage() {
         }
       } catch (cause) {
         if (!mounted) return;
-        setApiOnline(false);
         setError(cause instanceof Error ? cause.message : "Could not connect to the BedSynth API.");
       } finally { if (mounted) setLoading(false); }
     }
@@ -336,7 +327,7 @@ export default function SyntheticDataGeneratorPage() {
   const hasDepartments = activeDepartments.length > 0;
 
   return (
-      <main className="generator-page" id="main-content" data-backend-health={apiOnline === true ? "online" : apiOnline === false ? "offline" : "checking"}>
+      <main className="generator-page" id="main-content">
       <header className="generator-topbar">
         <Link href="/" className="generator-brand"><span className="generator-brand-mark"><Activity size={19} /></span><span>BedSynth <strong>AI</strong></span></Link>
       </header>

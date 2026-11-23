@@ -17,22 +17,33 @@ export default function HomePage() {
   const [error, setError] = useState("");
   useEffect(() => {
     let active = true;
-    fetch(`${apiBase}/api/v1/auth/me`, { credentials: "include", cache: "no-store" }).then(async (response) => {
-      if (response.ok) { if (active) setAccess("account"); return; }
-      if (active) setAccess("anonymous");
-    }).catch(() => { if (active) setAccess("anonymous"); });
+    async function loadDashboard() {
+      const [sessionResult, dashboardResult] = await Promise.allSettled([
+        fetch(`${apiBase}/api/v1/auth/me`, { credentials: "include", cache: "no-store" }),
+        fetch(`${apiBase}/api/v1/dashboard/user`, { credentials: "include", cache: "no-store" }),
+      ]);
+      if (!active) return;
+      if (sessionResult.status === "rejected" || !sessionResult.value.ok) {
+        setAccess("anonymous");
+        setLoading(false);
+        return;
+      }
+      setAccess("account");
+      try {
+        if (dashboardResult.status === "rejected") throw dashboardResult.reason;
+        if (!dashboardResult.value.ok) {
+          throw new Error(dashboardResult.value.status === 401 ? "Your session has expired. Sign in again." : "Dashboard data could not be loaded.");
+        }
+        setData(await dashboardResult.value.json());
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : "Dashboard data could not be loaded.");
+      } finally {
+        if (active) setLoading(false);
+      }
+    }
+    void loadDashboard();
     return () => { active = false; };
   }, []);
-  useEffect(() => {
-    if (access !== "account") return;
-    let active = true;
-    fetch(`${apiBase}/api/v1/dashboard/user`, { credentials: "include", cache: "no-store" })
-      .then(async (response) => { if (!response.ok) throw new Error(response.status === 401 ? "Your session has expired. Sign in again." : "Dashboard data could not be loaded."); return response.json(); })
-      .then((value) => { if (active) setData(value); })
-      .catch((cause) => { if (active) setError(cause instanceof Error ? cause.message : "Dashboard data could not be loaded."); })
-      .finally(() => { if (active) setLoading(false); });
-    return () => { active = false; };
-  }, [access]);
 
   const cards = [
     { label: "Your datasets", value: data?.total_datasets ?? 0, detail: "Completed runs you own", icon: Database, tone: "metric-icon-violet" },

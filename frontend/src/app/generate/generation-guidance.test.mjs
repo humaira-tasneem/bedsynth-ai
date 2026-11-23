@@ -4,6 +4,7 @@ import test from "node:test";
 
 const page = await readFile(new URL("./page.tsx", import.meta.url), "utf8");
 const styles = await readFile(new URL("../globals.css", import.meta.url), "utf8");
+const shell = await readFile(new URL("../../components/AppShell.tsx", import.meta.url), "utf8");
 
 test("admission type guidance explains categories, exact total, and example", () => {
   for (const text of [
@@ -60,12 +61,12 @@ test("patient profile controls use readable responsive age and gender cards", ()
   assert.match(styles, /@media \(max-width: 520px\)[^\n]*patient-age-card-grid,.patient-gender-card-grid \{ grid-template-columns: 1fr; \}/);
 });
 
-test("generator hides the backend status badge but retains internal health monitoring", () => {
+test("generator relies on shared health monitoring instead of repeating the health request", () => {
   assert.doesNotMatch(page, /Backend connected|Backend unavailable|Checking backend/);
   assert.doesNotMatch(page, /generator-api-state/);
   assert.doesNotMatch(styles, /generator-api-state/);
-  assert.match(page, /fetch\(`\$\{apiBase\}\/health`/);
-  assert.match(page, /setApiOnline\(health\.status === "ok"\)/);
-  assert.match(page, /setApiOnline\(false\)/);
-  assert.match(page, /data-backend-health=\{apiOnline === true \? "online"/);
+  assert.doesNotMatch(page, /apiOnline|\/health/);
+  assert.match(shell, /fetch\(`\$\{apiBase\}\/health`/);
+  assert.match(shell, /setHealth\("online"\)/);
+  assert.match(shell, /setHealth\("offline"\)/);
 });

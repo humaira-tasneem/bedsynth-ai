@@ -158,9 +158,13 @@ export default function HospitalStudioPage() {
     let mounted = true;
     async function initialize() {
       try {
-        const identity = await api<{ role: "admin" | "user" }>("/auth/me");
+        const [identity, initialWorkspaces] = await Promise.all([
+          api<{ role: "admin" | "user" }>("/auth/me"),
+          api<Workspace[]>("/workspaces"),
+        ]);
+        if (!mounted) return;
         setIsAdmin(identity.role === "admin");
-        let currentWorkspaces = await api<Workspace[]>("/workspaces");
+        let currentWorkspaces = initialWorkspaces;
         if (currentWorkspaces.length === 0) {
           if (identity.role === "admin") {
             await api<Workspace>("/workspaces", { method: "POST", body: JSON.stringify({ name: "My workspace" }) });

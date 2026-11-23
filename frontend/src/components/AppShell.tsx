@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { AnimatePresence, MotionConfig, motion } from "framer-motion";
+import { MotionConfig } from "framer-motion";
 import { landingPathForRole, restrictedDestination } from "@/lib/role-routing.mjs";
 import {
   Activity, BarChart3, Building2, ChevronDown, Database, LogOut, Users,
@@ -203,11 +203,7 @@ export default function AppShell({ children }: Readonly<{ children: React.ReactN
         <div className="product-topbar-actions" data-backend-health={health}><button type="button" className="product-icon-button product-theme" onClick={toggleTheme} aria-label={`Switch to ${dark ? "light" : "dark"} theme`} title={`Switch to ${dark ? "light" : "dark"} theme`}>{dark ? <Sun size={18} /> : <Moon size={18} />}</button></div>
       </header>
       <MotionConfig reducedMotion={motionPreference === "system" ? "user" : motionPreference === "reduce" ? "always" : "never"}>
-        <AnimatePresence mode="sync" initial={false}>
-          <motion.div key={pathname} className="product-route-frame" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.1, ease: "easeOut" }}>
-            {children}
-          </motion.div>
-        </AnimatePresence>
+        <div className="product-route-frame">{children}</div>
       </MotionConfig>
     </div>
   </div>;

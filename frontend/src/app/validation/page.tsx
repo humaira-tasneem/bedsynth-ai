@@ -40,8 +40,10 @@ export default function ValidationPage() {
     setLoading(true); setError("");
     try {
       const ws = await api<Workspace[]>("/workspaces"); setWorkspaces(ws);
-      const all: Run[] = [];
-      for (const workspace of ws) all.push(...await api<Run[]>(`/workspaces/${workspace.id}/generation-runs?limit=100`));
+      const runGroups = await Promise.all(
+        ws.map((workspace) => api<Run[]>(`/workspaces/${workspace.id}/generation-runs?limit=100`)),
+      );
+      const all = runGroups.flat();
       all.sort((a, b) => b.started_at.localeCompare(a.started_at)); setRuns(all);
       if (all.length && !all.some((run) => run.run_id === runId)) setRunId(all[0].run_id);
       if (!all.length) { setRunId(""); setHistory([]); setReport(null); }
