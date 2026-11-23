@@ -1,4 +1,4 @@
-"""SQLite engine and SQLAlchemy base configuration."""
+"""SQLAlchemy database configuration for local SQLite and PostgreSQL deploys."""
 
 import os
 from collections.abc import Generator
@@ -10,13 +10,20 @@ from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 
 def configured_database_url(database_url: str | None, app_env: str) -> str:
-    """Require explicit, absolute SQLite storage paths in production."""
+    """Normalize PostgreSQL URLs and validate persistent production SQLite paths."""
     is_production = app_env.strip().lower() == "production"
     if is_production and not database_url:
         raise RuntimeError("DATABASE_URL must be explicitly configured in production.")
 
-    resolved_url = database_url or "sqlite:///./bedsynth.db"
-    parsed_url = make_url(resolved_url)
+    parsed_url = make_url(database_url or "sqlite:///./bedsynth.db")
+    # Neon supplies the standard postgresql:// (and sometimes legacy postgres://)
+    # form. Select the declared synchronous psycopg 3 driver explicitly while
+    # preserving credentials, SSL options, and all other URL components.
+    if parsed_url.get_backend_name() in {"postgres", "postgresql"}:
+        parsed_url = parsed_url.set(drivername="postgresql+psycopg")
+    # URL.__str__ masks passwords with `***`, so serialize without redaction for
+    # SQLAlchemy's internal engine configuration. Never log this value.
+    resolved_url = parsed_url.render_as_string(hide_password=False)
     if is_production and parsed_url.get_backend_name() == "sqlite":
         database_path = parsed_url.database
         posix_path = PurePosixPath(database_path) if database_path else None
@@ -32,10 +39,11 @@ def configured_database_url(database_url: str | None, app_env: str) -> str:
 
 
 DATABASE_URL = configured_database_url(os.getenv("DATABASE_URL"), os.getenv("APP_ENV", "development"))
-connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
+_database_backend = make_url(DATABASE_URL).get_backend_name()
+connect_args = {"check_same_thread": False} if _database_backend == "sqlite" else {}
 engine = create_engine(DATABASE_URL, connect_args=connect_args, pool_pre_ping=True)
 
-if DATABASE_URL.startswith("sqlite"):
+if _database_backend == "sqlite":
     @event.listens_for(engine, "connect")
     def enable_sqlite_foreign_keys(connection, _record) -> None:
         """SQLite leaves FK enforcement off unless it is enabled per connection."""

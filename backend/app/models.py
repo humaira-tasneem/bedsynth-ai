@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, Float, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Float, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -10,6 +10,11 @@ from app.database import Base
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _case_insensitive_string(length: int):
+    """Keep SQLite NOCASE behavior without emitting its collation on PostgreSQL."""
+    return String(length).with_variant(String(length, collation="NOCASE"), "sqlite")
 
 
 class Workspace(Base):
@@ -45,7 +50,7 @@ class Hospital(Base):
     workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id", ondelete="RESTRICT"), nullable=False, index=True)
     network_id: Mapped[int | None] = mapped_column(ForeignKey("hospital_networks.id", ondelete="RESTRICT"), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(160), nullable=False)
-    code: Mapped[str] = mapped_column(String(40, collation="NOCASE"), nullable=False)
+    code: Mapped[str] = mapped_column(_case_insensitive_string(40), nullable=False)
     is_archived: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
     available_to_users: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
@@ -63,7 +68,7 @@ class User(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    email: Mapped[str] = mapped_column(String(254, collation="NOCASE"), unique=True, nullable=False, index=True)
+    email: Mapped[str] = mapped_column(_case_insensitive_string(254), unique=True, nullable=False, index=True)
     password_hash: Mapped[str] = mapped_column(String(256), nullable=False)
     role: Mapped[str] = mapped_column(String(16), nullable=False, default="user", index=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
@@ -136,7 +141,7 @@ class Department(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     hospital_id: Mapped[int] = mapped_column(ForeignKey("hospitals.id", ondelete="RESTRICT"), nullable=False, index=True)
-    code: Mapped[str] = mapped_column(String(40, collation="NOCASE"), nullable=False)
+    code: Mapped[str] = mapped_column(_case_insensitive_string(40), nullable=False)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     bed_capacity: Mapped[int | None] = mapped_column(nullable=True)
     is_archived: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
@@ -154,7 +159,7 @@ class Bed(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     hospital_id: Mapped[int] = mapped_column(ForeignKey("hospitals.id", ondelete="RESTRICT"), nullable=False, index=True)
     department_id: Mapped[int] = mapped_column(ForeignKey("departments.id", ondelete="RESTRICT"), nullable=False, index=True)
-    code: Mapped[str] = mapped_column(String(40, collation="NOCASE"), nullable=False)
+    code: Mapped[str] = mapped_column(_case_insensitive_string(40), nullable=False)
     category: Mapped[str] = mapped_column(String(60), nullable=False, default="general")
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="operational")
     hospital: Mapped[Hospital] = relationship(back_populates="beds")
@@ -399,3 +404,11 @@ class ValidationReport(Base):
     categories: Mapped[list] = mapped_column(JSON, nullable=False)
     issues: Mapped[list] = mapped_column(JSON, nullable=False)
     run: Mapped[GenerationRun] = relationship(back_populates="validation_reports")
+
+
+# PostgreSQL's default text collation is case-sensitive. These functional
+# indexes retain the case-insensitive uniqueness enforced by SQLite NOCASE.
+Index("uq_users_email_lower", func.lower(User.email), unique=True)
+Index("uq_hospitals_workspace_code_lower", Hospital.workspace_id, func.lower(Hospital.code), unique=True)
+Index("uq_departments_hospital_code_lower", Department.hospital_id, func.lower(Department.code), unique=True)
+Index("uq_beds_hospital_code_lower", Bed.hospital_id, func.lower(Bed.code), unique=True)

@@ -1,6 +1,6 @@
 # BedSynth AI backend
 
-FastAPI Hospital Studio, synthetic operations, validation, and analytics API using Pydantic, SQLAlchemy, and SQLite. It supports workspace-owned hospitals, departments, beds, deterministic generation runs, validation reports, and hospital-scoped analytics. It does not store real patient data or provide statistical utility/privacy-risk evaluation.
+FastAPI Hospital Studio, synthetic operations, validation, and analytics API using Pydantic and SQLAlchemy. SQLite is the local default; PostgreSQL is supported through `DATABASE_URL` and psycopg 3. It supports workspace-owned hospitals, departments, beds, deterministic generation runs, validation reports, and hospital-scoped analytics. It does not store real patient data or provide statistical utility/privacy-risk evaluation.
 
 ## Setup
 
@@ -36,6 +36,12 @@ Railway supplies `PORT`; do not use `--reload` in production. Configure `APP_ENV
 Production requires an explicit `DATABASE_URL`; the SQLite file must be beneath `/data`, the documented Railway volume mount. This prevents the local relative default or another unmounted file path from being used silently. It also requires `FRONTEND_ORIGINS` or `FRONTEND_ORIGIN` to contain exact HTTPS origin(s); wildcard, missing, non-HTTPS, and path-bearing origins are rejected at startup. Ensure `/data` is the attached Railway volume before the service starts. The public health check is `GET /health` and verifies both the API and database connection.
 
 For Vercel's same-origin API proxy, set the frontend's server-side `BACKEND_API_URL` to the Railway HTTPS origin. The browser's `Origin` is forwarded and must be included exactly in `FRONTEND_ORIGINS`; the session cookie can use `SameSite=Lax` because the browser communicates with the frontend origin. If bypassing the proxy with `NEXT_PUBLIC_API_BASE_URL`, use HTTPS, `SESSION_COOKIE_SAMESITE=none`, and `SESSION_COOKIE_SECURE=true`; browser cross-site cookie restrictions may still apply.
+
+### Render with Neon PostgreSQL
+
+Set the Render backend root directory to `backend`, use `pip install -r requirements.txt` as the build command, and `uvicorn app.main:app --host 0.0.0.0 --port $PORT` as the start command. Configure `APP_ENV=production`, `FRONTEND_ORIGINS` with the exact HTTPS frontend origin, and `DATABASE_URL` with the Neon-provided PostgreSQL URL in Render's environment settings. Standard `postgresql://` and `postgres://` URLs are normalized to `postgresql+psycopg://`; URL query options such as `sslmode=require` are preserved. `psycopg[binary]` is declared in `requirements.txt` and is installed as part of deployment.
+
+The SQLite relative default and local `backend/bedsynth.db` behavior are unchanged. On PostgreSQL, startup creates missing tables from the current SQLAlchemy metadata. The additive legacy schema updates in `initialize_database()` apply only to SQLite; no PostgreSQL migration framework or SQLite-to-Neon data migration is included. Use a fresh Neon database unless a separate migration plan has been reviewed. The production bootstrap command documented above is Railway/SQLite-specific and must not be used with Neon.
 
 ### One-time production bootstrap
 

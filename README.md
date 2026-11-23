@@ -47,7 +47,7 @@ New registrations receive the normal `user` role. Users cannot modify hospital c
 
 ## System Architecture
 
-The application uses a Next.js frontend and a FastAPI backend. The frontend calls REST endpoints over HTTP and sends the authentication session cookie. FastAPI applies authentication, role, hospital-visibility, and dataset-ownership checks before invoking SQLAlchemy-backed services. The services use SQLite by default for configuration and generated records.
+The application uses a Next.js frontend and a FastAPI backend. The frontend calls REST endpoints over HTTP and sends the authentication session cookie. FastAPI applies authentication, role, hospital-visibility, and dataset-ownership checks before invoking SQLAlchemy-backed services. SQLite remains the local default; the backend can also use PostgreSQL through `DATABASE_URL`.
 
 ```mermaid
 flowchart LR
@@ -57,7 +57,7 @@ flowchart LR
     API --> Operations[Generation, validation, analytics, dataset services]
     Hospital --> ORM[SQLAlchemy models]
     Operations --> ORM
-    ORM --> DB[(SQLite database)]
+    ORM --> DB[(SQLite local / PostgreSQL deployment)]
     Operations -->|Preview first; persist only after confirmation| DB
 ```
 
@@ -69,7 +69,7 @@ Generation uses the existing Python service and seeded random generation. Previe
 | --- | --- |
 | Frontend | Next.js App Router, React, TypeScript, Tailwind CSS, Recharts, Lucide, Framer Motion |
 | Backend API | Python, FastAPI, Pydantic, SQLAlchemy |
-| Database | SQLite by default; SQLAlchemy database URL configuration |
+| Database | SQLite for local development; PostgreSQL support through SQLAlchemy and psycopg 3 |
 | Generation and analysis | Python standard library, SQLAlchemy-backed generation, validation, analytics, and export services |
 | Backend verification | Pytest, HTTPX test client support |
 | Frontend verification | Node.js built-in test runner, TypeScript compiler, Next.js production build |
@@ -220,7 +220,7 @@ Open `http://localhost:3000`. The backend health endpoint is `http://127.0.0.1:8
 
 ## Production Deployment
 
-The deployment target is a single FastAPI service on Railway and a Next.js application on Vercel. Deploy the `backend` directory as the Railway service root and the `frontend` directory as the Vercel project root.
+The frontend can be deployed to Vercel. The backend supports Railway with persistent SQLite storage or Render with PostgreSQL on Neon. Deploy the `backend` directory as the backend service root and the `frontend` directory as the Vercel project root.
 
 ### Railway backend
 
@@ -245,6 +245,12 @@ SESSION_COOKIE_SECURE=true
 `DATABASE_URL` must be explicitly set in production. Production startup rejects an unset SQLite URL and any SQLite file path outside `/data`, so the app will not silently create the default database in ephemeral service storage. Mount the volume at `/data` before starting the service. Back up the volume before schema-changing releases; startup currently applies additive SQLite compatibility updates and creates missing tables/indexes.
 
 Production also requires `FRONTEND_ORIGINS` or `FRONTEND_ORIGIN` to explicitly list exact HTTPS frontend origins. Startup rejects missing origins, wildcard origins, non-HTTPS origins, and origin values containing paths.
+
+### Render backend with Neon PostgreSQL
+
+For Render, use `backend` as the service root, install dependencies with `pip install -r requirements.txt`, and start with `uvicorn app.main:app --host 0.0.0.0 --port $PORT`. Configure `APP_ENV=production`, `FRONTEND_ORIGINS` with the exact HTTPS frontend origin, and `DATABASE_URL` with the Neon connection string in Render's environment settings. Standard Neon `postgresql://` and `postgres://` URLs are normalized to the synchronous psycopg 3 driver; SSL query options in the URL are preserved. Keep the database URL server-side and never use a `NEXT_PUBLIC_` variable for it.
+
+PostgreSQL schema creation is supported for a fresh database. The existing additive legacy-schema migration logic is SQLite-specific, and no SQLite-to-PostgreSQL data migration is included. Do not point Render at an existing database with unreviewed schema or data. The one-time `app.bootstrap_production` command remains intentionally restricted to Railway's `/data/bedsynth.db`; production administrator and demo-data provisioning for Render needs a separately reviewed procedure.
 
 ### Vercel frontend and API proxy
 

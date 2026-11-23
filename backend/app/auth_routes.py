@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from datetime import date as date_type
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import Date, case, cast, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, aliased
 
@@ -43,6 +43,13 @@ def _date_bounds(from_date: date_type | None, to_date: date_type | None) -> tupl
     start = datetime.combine(from_date, datetime.min.time(), timezone.utc) if from_date else None
     end_day = (to_date or today) + timedelta(days=1)
     return start, datetime.combine(end_day, datetime.min.time(), timezone.utc)
+
+
+def _registration_day_expression(db: Session):
+    """Group UTC timestamps by date using functions supported by each database."""
+    if db.get_bind().dialect.name == "postgresql":
+        return cast(func.timezone("UTC", User.created_at), Date)
+    return func.date(User.created_at)
 
 
 def _event_payload(event: AccountActivityEvent, actor_email: str | None, target_email: str | None) -> dict:
@@ -308,9 +315,10 @@ def user_registration_activity(days: int = Query(default=30, ge=7, le=30), db: S
     today = datetime.now(timezone.utc).date()
     start = today - timedelta(days=days - 1)
     start_at, end_at = _date_bounds(start, today)
-    rows = db.execute(select(func.date(User.created_at), func.count(User.id))
+    day_bucket = _registration_day_expression(db)
+    rows = db.execute(select(day_bucket, func.count(User.id))
                       .where(User.created_at >= start_at, User.created_at < end_at)
-                      .group_by(func.date(User.created_at))).all()
+                      .group_by(day_bucket)).all()
     counts = {str(day): int(total) for day, total in rows}
     return {"days": days, "items": [{"date": (start + timedelta(days=i)).isoformat(),
                                       "registrations": counts.get((start + timedelta(days=i)).isoformat(), 0)}
@@ -346,12 +354,16 @@ def registration_series(from_date: date_type | None = None, to_date: date_type |
         group = "day" if span <= 90 else "week" if span <= 730 else "month"
     else:
         group = granularity
-    bucket = func.date(User.created_at) if group == "day" else func.strftime("%Y-%W", User.created_at) if group == "week" else func.strftime("%Y-%m", User.created_at)
-    query = select(bucket, func.count(User.id)).where(User.created_at < end)
+    day_bucket = _registration_day_expression(db)
+    query = select(day_bucket, func.count(User.id)).where(User.created_at < end)
     if start:
         query = query.where(User.created_at >= start)
-    rows = db.execute(query.group_by(bucket).order_by(bucket)).all()
-    counts = {str(period): int(count) for period, count in rows}
+    rows = db.execute(query.group_by(day_bucket).order_by(day_bucket)).all()
+    counts: dict[str, int] = {}
+    for value, total in rows:
+        day = value if isinstance(value, date_type) else date_type.fromisoformat(str(value))
+        period = day.isoformat() if group == "day" else day.strftime("%Y-%W") if group == "week" else day.strftime("%Y-%m")
+        counts[period] = counts.get(period, 0) + int(total)
     if from_date and to_date:
         periods: list[str] = []
         if group == "day":
