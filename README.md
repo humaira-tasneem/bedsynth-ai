@@ -250,7 +250,27 @@ Production also requires `FRONTEND_ORIGINS` or `FRONTEND_ORIGIN` to explicitly l
 
 For Render, use `backend` as the service root, install dependencies with `pip install -r requirements.txt`, and start with `uvicorn app.main:app --host 0.0.0.0 --port $PORT`. Configure `APP_ENV=production`, `FRONTEND_ORIGINS` with the exact HTTPS frontend origin, and `DATABASE_URL` with the Neon connection string in Render's environment settings. Standard Neon `postgresql://` and `postgres://` URLs are normalized to the synchronous psycopg 3 driver; SSL query options in the URL are preserved. Keep the database URL server-side and never use a `NEXT_PUBLIC_` variable for it.
 
-PostgreSQL schema creation is supported for a fresh database. The existing additive legacy-schema migration logic is SQLite-specific, and no SQLite-to-PostgreSQL data migration is included. Do not point Render at an existing database with unreviewed schema or data. The one-time `app.bootstrap_production` command remains intentionally restricted to Railway's `/data/bedsynth.db`; production administrator and demo-data provisioning for Render needs a separately reviewed procedure.
+PostgreSQL schema creation is supported for a fresh database. The existing additive legacy-schema migration logic is SQLite-specific, and no SQLite-to-PostgreSQL data migration is included. Do not point Render at an existing database with unreviewed schema or data. For a fresh Neon database, use the separate `app.bootstrap_postgres` procedure described below; `app.bootstrap_production` remains restricted to Railway's `/data/bedsynth.db`.
+
+#### One-time Neon database initialization
+
+Use this procedure only for a newly created, empty Neon database. It requires a Neon PostgreSQL URL with `sslmode=require` (or stronger), exact HTTPS `FRONTEND_ORIGINS`, `APP_ENV=production`, and an explicit temporary enable flag. It verifies the active SQLAlchemy engine matches the validated Neon host, database, user, and TLS mode. It refuses non-Neon databases and any existing application rows. The existing transaction creates the administrator, seeds the four fictional hospitals, and records a persistent completion marker; newly seeded hospitals remain unpublished. Repeating after success is a no-op and cannot change the administrator password. Failed administrator/seed writes roll back together; empty schema tables may remain.
+
+In Render's protected environment settings, temporarily set:
+
+```text
+BEDSY_AI_POSTGRES_BOOTSTRAP_ENABLED=true
+BEDSY_AI_BOOTSTRAP_ADMIN_EMAIL=<administrator email>
+BEDSY_AI_BOOTSTRAP_ADMIN_PASSWORD=<unique 12–128 character password>
+```
+
+Keep the normal `DATABASE_URL`, `APP_ENV=production`, and `FRONTEND_ORIGINS` values configured. With the Render service root directory set to `backend`, temporarily use this Start Command (credentials are not part of the command):
+
+```sh
+python -m app.bootstrap_postgres && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+```
+
+After the deployment starts, verify `/health`, sign in, and confirm all four hospitals appear in Hospital Management. Then immediately remove all three temporary bootstrap variables, restore the regular Start Command `uvicorn app.main:app --host 0.0.0.0 --port $PORT`, and redeploy. Publish hospitals explicitly before normal users select them. Never run this command against Railway or a database containing application data.
 
 ### Vercel frontend and API proxy
 
